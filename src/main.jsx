@@ -447,6 +447,7 @@ function App() {
     (_, joinType) => `${joinType.toUpperCase()} JOIN`
   );
           break;
+      }
         case 'minifier':
           output = minifySQL(query);
           break;
