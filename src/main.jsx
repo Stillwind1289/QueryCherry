@@ -440,6 +440,7 @@ function App() {
             language: 'sql',
             tabWidth: 2,
             keywordCase: 'upper'
+            linesBetweenQueries: 1
           });
           break;
         case 'minifier':
