@@ -1,5 +1,7 @@
+
 import React, { useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { format as formatSQL } from 'sql-formatter';
 import {
   ArrowRight, Braces, ChartNoAxesCombined, Check, ChevronDown,
   Code2, Copy, Database, FileJson, FileSpreadsheet,
@@ -16,21 +18,21 @@ const cats = [
 ];
 
 const tools = [
-  ['sql-format', 'SQL Formatter', 'Make long queries easier to read with clean indentation.', 'sql', Database, 'coral', 'Ready', 'formatter'],
-  ['sql-minify', 'SQL Minifier', 'Remove unnecessary whitespace from SQL queries.', 'sql', Minimize2, 'orange', 'Ready', 'minifier'],
-  ['sql-case', 'SQL Case Converter', 'Standardize SQL keywords to upper or lower case.', 'sql', Paintbrush, 'purple', 'Ready', 'case'],
-  ['sql-check', 'SQL Quick Check', 'Spot common query structure issues before you run it.', 'sql', ShieldCheck, 'green'],
-  ['csv-view', 'CSV Viewer', 'Preview rows and columns without opening a spreadsheet.', 'csv', Table2, 'green'],
+  ['sql-format', 'SQL Formatter', 'Format SQL with consistent indentation and readable clauses.', 'sql', Database, 'coral', 'Ready', 'formatter'],
+  ['sql-minify', 'SQL Minifier', 'Compact SQL while preserving quoted text and comments.', 'sql', Minimize2, 'orange', 'Ready', 'minifier'],
+  ['sql-case', 'SQL Case Converter', 'Change SQL keywords to uppercase or lowercase.', 'sql', Paintbrush, 'purple', 'Ready', 'case'],
+  ['sql-check', 'SQL Quick Check', 'Check common SQL structure issues before execution.', 'sql', ShieldCheck, 'green', 'Ready', 'check'],
+  ['csv-view', 'CSV Viewer', 'Preview CSV rows and columns.', 'csv', Table2, 'green'],
   ['csv-json', 'CSV to JSON', 'Convert CSV rows into a JSON array.', 'csv', FileSpreadsheet, 'blue', 'Ready', 'csv-json'],
-  ['json-format', 'JSON Formatter', 'Beautify and validate structured JSON data.', 'json', FileJson, 'purple'],
-  ['json-diff', 'JSON Diff', 'Compare two JSON values and find what changed.', 'json', GitCompareArrows, 'coral'],
+  ['json-format', 'JSON Formatter', 'Beautify and validate JSON data.', 'json', FileJson, 'purple'],
+  ['json-diff', 'JSON Diff', 'Compare two JSON values.', 'json', GitCompareArrows, 'coral'],
   ['clean-duplicates', 'Duplicate Finder', 'Find repeated rows in a dataset.', 'clean', Sparkles, 'yellow'],
   ['sheet-tools', 'Spreadsheet Helpers', 'Make common row and column tasks easier.', 'sheets', FileSpreadsheet, 'green'],
-  ['chart-csv', 'CSV to Chart', 'Turn a small dataset into a quick visual summary.', 'visual', ChartNoAxesCombined, 'blue'],
-  ['table-diff', 'Table Comparator', 'Understand differences between two datasets.', 'compare', GitCompareArrows, 'orange'],
+  ['chart-csv', 'CSV to Chart', 'Turn a dataset into a quick visual summary.', 'visual', ChartNoAxesCombined, 'blue'],
+  ['table-diff', 'Table Comparator', 'Compare two datasets.', 'compare', GitCompareArrows, 'orange'],
   ['regex', 'Regex Tester', 'Test regular expressions against sample text.', 'dev', Code2, 'purple'],
-  ['json-minify', 'JSON Minifier', 'Compact JSON for smaller payloads.', 'json', Minimize2, 'yellow'],
-  ['data-clean', 'Text Cleaner', 'Trim whitespace and normalize pasted text.', 'clean', WandSparkles, 'coral'],
+  ['json-minify', 'JSON Minifier', 'Compact JSON payloads.', 'json', Minimize2, 'yellow'],
+  ['data-clean', 'Text Cleaner', 'Trim and normalize pasted text.', 'clean', WandSparkles, 'coral'],
   ['timestamp', 'Timestamp Converter', 'Convert common timestamp formats.', 'dev', Zap, 'blue']
 ];
 
@@ -46,28 +48,183 @@ Ava,21,Jaipur
 Noah,24,"New York, NY"
 Mia,19,Delhi`;
 
-function fmt(s) {
-  let out = s.trim().replace(/\s+/g, ' ');
-  for (const k of [
-    'GROUP BY', 'ORDER BY', 'LEFT JOIN', 'RIGHT JOIN',
-    'INNER JOIN', 'FULL JOIN', 'INSERT INTO', 'DELETE FROM',
-    'SELECT', 'FROM', 'WHERE', 'HAVING', 'LIMIT', 'OFFSET',
-    'JOIN', 'ON', 'AND', 'OR', 'UNION', 'VALUES', 'UPDATE',
-    'SET', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END'
-  ]) {
-    out = out.replace(
-      new RegExp('\\b' + k.replace(/ /g, '\\s+') + '\\b', 'ig'),
-      '\n' + k
-    );
+const keywordPattern =
+  /\b(SELECT|FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|OFFSET|LEFT JOIN|RIGHT JOIN|FULL JOIN|INNER JOIN|OUTER JOIN|CROSS JOIN|JOIN|ON|AND|OR|NOT|IN|IS|NULL|AS|DISTINCT|UNION ALL|UNION|INSERT INTO|VALUES|UPDATE|SET|DELETE FROM|CREATE TABLE|ALTER TABLE|DROP TABLE|CASE|WHEN|THEN|ELSE|END|EXISTS|BETWEEN|LIKE|ASC|DESC|BY|WITH|OVER|PARTITION BY|FETCH|FIRST|ROWS|ONLY|RETURNING)\b/gi;
+
+function transformSQLKeywords(input, letter) {
+  let out = '';
+  let i = 0;
+  let quote = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  while (i < input.length) {
+    const ch = input[i];
+    const next = input[i + 1];
+
+    if (lineComment) {
+      out += ch;
+      if (ch === '\n') lineComment = false;
+      i++;
+      continue;
+    }
+
+    if (blockComment) {
+      out += ch;
+      if (ch === '*' && next === '/') {
+        out += '/';
+        i += 2;
+        blockComment = false;
+      } else i++;
+      continue;
+    }
+
+    if (quote) {
+      out += ch;
+      if (ch === quote) {
+        if (next === quote && quote !== '`') {
+          out += next;
+          i += 2;
+          continue;
+        }
+        if (input[i - 1] !== '\\') quote = null;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      out += '--';
+      i += 2;
+      lineComment = true;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      out += '/*';
+      i += 2;
+      blockComment = true;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    const rest = input.slice(i);
+    const match = rest.match(keywordPattern);
+    if (match && match.index === 0) {
+      out += letter === 'upper'
+        ? match[0].toUpperCase()
+        : match[0].toLowerCase();
+      i += match[0].length;
+      continue;
+    }
+
+    out += ch;
+    i++;
   }
-  out = out.replace(/^\n/, '').replace(
-    /\b(SELECT|FROM|WHERE|GROUP BY|ORDER BY|HAVING|LIMIT|OFFSET|LEFT JOIN|RIGHT JOIN|INNER JOIN|FULL JOIN|JOIN|ON|AND|OR|UNION|INSERT INTO|VALUES|UPDATE|SET|DELETE FROM|CASE|WHEN|THEN|ELSE|END)\b/gi,
-    m => m.toUpperCase()
-  );
-  return out.split('\n').map(x => x.trim()).join('\n');
+
+  return out;
 }
 
-// CSV parser: handles quoted fields, escaped quotes and commas in quotes.
+// Compact SQL outside quotes and comments, retaining necessary token spacing.
+function minifySQL(input) {
+  let out = '';
+  let i = 0;
+  let quote = null;
+  let lineComment = false;
+  let blockComment = false;
+  let pendingSpace = false;
+
+  const isWord = c => c && /[a-zA-Z0-9_$]/.test(c);
+
+  while (i < input.length) {
+    const ch = input[i];
+    const next = input[i + 1];
+
+    if (lineComment) {
+      out += ch;
+      if (ch === '\n') {
+        lineComment = false;
+        pendingSpace = true;
+      }
+      i++;
+      continue;
+    }
+
+    if (blockComment) {
+      out += ch;
+      if (ch === '*' && next === '/') {
+        out += '/';
+        i += 2;
+        blockComment = false;
+      } else i++;
+      continue;
+    }
+
+    if (quote) {
+      out += ch;
+      if (ch === quote) {
+        if (next === quote && quote !== '`') {
+          out += next;
+          i += 2;
+          continue;
+        }
+        if (input[i - 1] !== '\\') quote = null;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      if (pendingSpace && out && !out.endsWith(' ')) out += ' ';
+      pendingSpace = false;
+      out += '--';
+      i += 2;
+      lineComment = true;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      if (pendingSpace && out && !out.endsWith(' ')) out += ' ';
+      pendingSpace = false;
+      out += '/*';
+      i += 2;
+      blockComment = true;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') {
+      if (pendingSpace && isWord(out.at(-1))) out += ' ';
+      pendingSpace = false;
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      pendingSpace = true;
+      i++;
+      continue;
+    }
+
+    if (pendingSpace && isWord(ch) && isWord(out.at(-1))) out += ' ';
+    pendingSpace = false;
+    out += ch;
+    i++;
+  }
+
+  if (quote) throw new Error('A quoted string or identifier was not closed.');
+  if (blockComment) throw new Error('A block comment was not closed.');
+
+  return out.trim();
+}
+
 function csvToJSON(input) {
   if (!input.trim()) throw new Error('Paste some CSV data first.');
 
@@ -104,7 +261,7 @@ function csvToJSON(input) {
     }
   }
 
-  if (quoted) throw new Error('A quoted field was not closed.');
+  if (quoted) throw new Error('A quoted CSV field was not closed.');
 
   row.push(field);
   if (row.some(value => value.trim() !== '')) rows.push(row);
@@ -117,10 +274,7 @@ function csvToJSON(input) {
     (i === 0 ? h.replace(/^\uFEFF/, '') : h).trim()
   );
 
-  if (headers.some(h => !h)) {
-    throw new Error('Every column needs a header.');
-  }
-
+  if (headers.some(h => !h)) throw new Error('Every column needs a header.');
   if (new Set(headers).size !== headers.length) {
     throw new Error('Column headers must be unique.');
   }
@@ -131,13 +285,96 @@ function csvToJSON(input) {
         `Row ${index + 2} has ${values.length} columns; expected ${headers.length}.`
       );
     }
-
-    return Object.fromEntries(
-      headers.map((header, i) => [header, values[i]])
-    );
+    return Object.fromEntries(headers.map((header, i) => [header, values[i]]));
   });
 
   return JSON.stringify(data, null, 2);
+}
+
+function checkSQL(input) {
+  if (!input.trim()) throw new Error('Paste a SQL query first.');
+
+  const issues = [];
+  let quote = null;
+  let lineComment = false;
+  let blockComment = false;
+  const stack = [];
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+
+    if (lineComment) {
+      if (ch === '\n') lineComment = false;
+      continue;
+    }
+
+    if (blockComment) {
+      if (ch === '*' && next === '/') {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        if (next === quote && quote !== '`') {
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      lineComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '/' && next === '*') {
+      blockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch;
+      continue;
+    }
+
+    if (ch === '(' || ch === '[') stack.push({ ch, index: i });
+    if (ch === ')' || ch === ']') {
+      const last = stack.pop();
+      if (!last || (ch === ')' && last.ch !== '(') ||
+          (ch === ']' && last.ch !== '[')) {
+        issues.push(`Unexpected closing "${ch}" near character ${i + 1}.`);
+      }
+    }
+  }
+
+  if (quote) issues.push('A quoted string or identifier appears unclosed.');
+  if (blockComment) issues.push('A block comment appears unclosed.');
+  if (stack.length) issues.push(`A "${stack[stack.length - 1].ch}" bracket is not closed.`);
+
+  const clean = input.replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  if (/^\s*(WHERE|AND|OR|JOIN|ON|GROUP BY|ORDER BY)\b/i.test(clean)) {
+    issues.push('The query begins with a clause that normally needs a preceding statement.');
+  }
+  if (/\bSELECT\s*(FROM|WHERE|GROUP BY|ORDER BY|;|$)/i.test(clean)) {
+    issues.push('SELECT appears to be missing its column list.');
+  }
+  if (/\bFROM\s*(WHERE|GROUP BY|ORDER BY|;|$)/i.test(clean)) {
+    issues.push('FROM appears to be missing a table name.');
+  }
+
+  if (issues.length) {
+    return 'Potential issues found:\n\n' + issues.map((x, i) => `${i + 1}. ${x}`).join('\n');
+  }
+
+  return 'No obvious structural issues found.\n\nThis is a lightweight check, not a full SQL parser. It cannot guarantee that the query is valid for your database.';
 }
 
 function Cherry({ small = false }) {
@@ -197,17 +434,29 @@ function App() {
     try {
       let output = query;
 
-      if (selected[7] === 'formatter') output = fmt(query);
-      if (selected[7] === 'minifier') {
-        output = query.replace(/--.*$/gm, '').replace(/\s+/g, ' ').trim();
+      switch (selected[7]) {
+        case 'formatter':
+          output = formatSQL(query, {
+            language: 'sql',
+            tabWidth: 2,
+            keywordCase: 'upper'
+          });
+          break;
+        case 'minifier':
+          output = minifySQL(query);
+          break;
+        case 'case':
+          output = transformSQLKeywords(query, letter);
+          break;
+        case 'csv-json':
+          output = csvToJSON(query);
+          break;
+        case 'check':
+          output = checkSQL(query);
+          break;
+        default:
+          throw new Error('This tool is not available yet.');
       }
-      if (selected[7] === 'case') {
-        output = query.replace(
-          /\b(select|from|where|group by|order by|having|limit|offset|left join|right join|inner join|join|on|and|or|as|distinct|null|is|not|in|case|when|then|else|end)\b/gi,
-          m => letter === 'upper' ? m.toUpperCase() : m.toLowerCase()
-        );
-      }
-      if (selected[7] === 'csv-json') output = csvToJSON(query);
 
       setResult(output);
     } catch (e) {
@@ -351,7 +600,7 @@ function App() {
 
         <section className="section trust" id="privacy">
           <span className="trust-icon"><ShieldCheck /></span>
-          <div><h3>Your data deserves a little privacy.</h3><p>QueryCherry aims to process data locally in your browser wherever practical. Each tool will clearly explain how it handles your data.</p></div>
+          <div><h3>Your data deserves a little privacy.</h3><p>QueryCherry processes these tool inputs in your browser. Each tool should clearly explain its limits and how it handles your data.</p></div>
           <span className="trust-tag">Privacy-minded by design</span>
         </section>
 
@@ -370,7 +619,7 @@ function App() {
           <div className="workspace-title">
             <span className={'tool-icon large ' + selected[5]}>{React.createElement(selected[4], { size: 28 })}</span>
             <div>
-              <div className="eyebrow mini">QUERYCHERRY · {selected[3] === 'csv' ? 'CSV TOOLS' : 'SQL TOOLS'}</div>
+              <div className="eyebrow mini">QUERYCHERRY · {selected[3].toUpperCase()} TOOLS</div>
               <h1>{selected[1]}</h1><p>{selected[2]}</p>
             </div>
           </div>
@@ -385,7 +634,7 @@ function App() {
               <div className="editor-actions">
                 {selected[7] === 'case' && <select value={letter} onChange={e => setLetter(e.target.value)}><option value="upper">UPPERCASE keywords</option><option value="lower">lowercase keywords</option></select>}
                 <small>{selected[7] === 'csv-json' ? 'CSV is processed locally in your browser' : 'Runs locally in your browser'}</small>
-                <button className="btn primary" onClick={run}><Play size={14} />{selected[7] === 'formatter' ? 'Format SQL' : selected[7] === 'minifier' ? 'Minify SQL' : selected[7] === 'case' ? 'Convert case' : 'Convert to JSON'}</button>
+                <button className="btn primary" onClick={run}><Play size={14} />{selected[7] === 'formatter' ? 'Format SQL' : selected[7] === 'minifier' ? 'Minify SQL' : selected[7] === 'case' ? 'Convert case' : selected[7] === 'check' ? 'Check SQL' : 'Convert to JSON'}</button>
               </div>
             </section>
             <section className="editor">
@@ -396,7 +645,7 @@ function App() {
             </section>
           </div>
 
-          <div className="note"><ShieldCheck /><div><strong>Keep your data yours.</strong><p>{selected[7] === 'csv-json' ? 'CSV conversion happens locally in your browser. Values are returned as strings. Check the output before using it in production.' : 'This first version processes text in your browser. The formatter is a lightweight demo, not a complete SQL parser; verify complex queries before production use.'}</p></div></div>
+          <div className="note"><ShieldCheck /><div><strong>Keep your data yours.</strong><p>{selected[7] === 'csv-json' ? 'CSV conversion happens locally in your browser. Values are returned as strings. Check the output before using it in production.' : selected[7] === 'check' ? 'This is a lightweight structural check, not a complete SQL parser. A clean result does not guarantee that your database will accept the query.' : 'SQL processing happens locally in your browser. Test important queries against your own database and dialect before production use.'}</p></div></div>
         </main>
       )}
 
@@ -406,4 +655,3 @@ function App() {
 }
 
 createRoot(document.getElementById('root')).render(<App />);
-
