@@ -448,7 +448,7 @@ function App() {
   );
           break;
       }
-      break;
+      
         case 'minifier':
           output = minifySQL(query);
           break;
