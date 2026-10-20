@@ -439,7 +439,7 @@ function App() {
           output = formatSQL(query, {
             language: 'sql',
             tabWidth: 2,
-            keywordCase: 'upper'
+            keywordCase: 'upper',
             linesBetweenQueries: 1
           });
           break;
