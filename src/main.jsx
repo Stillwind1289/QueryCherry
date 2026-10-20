@@ -442,6 +442,10 @@ function App() {
             keywordCase: 'upper',
             linesBetweenQueries: 1
           });
+          output = formatted.replace(
+    /\b(LEFT|RIGHT|FULL|INNER|OUTER|CROSS|NATURAL)\s*\n\s*JOIN\b/gi,
+    (_, joinType) => `${joinType.toUpperCase()} JOIN`
+  );
           break;
         case 'minifier':
           output = minifySQL(query);
