@@ -60,9 +60,9 @@ function JoinVisualizer() {
       onDrop: e => { e.preventDefault(); setDraggingSide(''); loadCSVFile(e.dataTransfer.files?.[0], setter, side); }
     };
   }
-  const left = useMemo(() => { try { const p = parseCSV(leftCSV); return {name:leftName.trim() || 'left_table', ...p}; } catch (e) { return { error: e.message }; } }, [leftCSV, leftName]);
-  const right = useMemo(() => { try { const p = parseCSV(rightCSV); return {name:rightName.trim() || 'right_table', ...p}; } catch (e) { return { error: e.message }; } }, [rightCSV, rightName]);
-  const [leftKey, setLeftKey] = useState('id');
+  const left = useMemo(() => { try { const p = parseCSV(leftCSV); return {name:leftName.trim() || 'left_table', columns:p.headers, rows:p.rows}; } catch (e) { return { error: e.message }; } }, [leftCSV, leftName]);
+const right = useMemo(() => { try { const p = parseCSV(rightCSV); return {name:rightName.trim() || 'right_table', columns:p.headers, rows:p.rows}; } catch (e) { return { error: e.message }; } }, [rightCSV, rightName]);
+    const [leftKey, setLeftKey] = useState('id');
   const [rightKey, setRightKey] = useState('user_id');
   const leftCol = left.columns?.includes(leftKey) ? leftKey : left.columns?.[0] || '';
   const rightCol = right.columns?.includes(rightKey) ? rightKey : right.columns?.[0] || '';
