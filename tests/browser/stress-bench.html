@@ -1,8 +1,66 @@
 <!doctype html>
+
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>QueryCherry Browser Stress Bench</title>
-<style>body{font:16px system-ui;max-width:900px;margin:24px auto;padding:0 16px;color:#222}button{padding:10px 14px;margin:4px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:12px;border-radius:8px}.warn{background:#fff4d6;padding:10px;border-radius:8px}</style></head>
-<body><h1>QueryCherry browser benchmark</h1><p class="warn">Uses generated fake data and the actual source functions. Start with 1,000-row workloads. Do not run on a phone while other apps are needed. This is a bounded test, not a crash-boundary test.</p>
-<label>Maximum row workload <select id="rows"><option value="100">100 (phone-safe smoke)</option><option value="1000" selected>1,000 (recommended first run)</option><option value="5000">5,000 (moderate; preferably laptop)</option></select></label>
-<button id="run">Run browser benchmark</button> <button id="download" disabled>Download JSON report</button><p id="status">Ready. No tests have run yet.</p><pre id="output">Results will appear here.</pre>
-<script type="module" src="./stress-bench.js"></script></body></html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QueryCherry Browser Benchmark</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 850px;
+      margin: 24px auto;
+      padding: 0 16px;
+      line-height: 1.5;
+      color: #222;
+    }
+    h1 { font-size: 1.6rem; }
+    .notice {
+      background: #fff4d6;
+      border: 1px solid #e5c46b;
+      border-radius: 8px;
+      padding: 12px;
+      margin: 16px 0;
+    }
+    select, button {
+      font: inherit;
+      padding: 10px;
+      margin: 6px 6px 6px 0;
+      max-width: 100%;
+    }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .6; }
+    pre {
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>QueryCherry Browser Benchmark</h1>  <p>
+    Uses generated fake data and actual QueryCherry source functions.
+    This is a bounded performance test, not a crash-boundary test.
+  </p>  <div class="notice">
+    <strong>Safety note:</strong>
+    10,000 rows may make a phone slow or unresponsive.
+    Close unnecessary tabs and apps first. If possible, use a laptop.
+    The benchmark cannot forcibly stop a synchronous operation once it starts.
+  </div><label for="rows"><strong>Maximum row workload:</strong></label>
+<select id="rows">
+<option value="1000">1,000 rows (light)</option>
+<option value="5000" selected>5,000 rows (moderate)</option>
+<option value="10000">10,000 rows (heavy; preferably laptop)</option>
+</select>
+
+  <div>
+    <button id="run" type="button">Run browser benchmark</button>
+    <button id="download" type="button" disabled>Download JSON report</button>
+  </div>  <p id="status" role="status">Ready. Select a workload to begin.</p>
+  <pre id="output">Benchmark results will appear here.</pre>  <script type="module" src="./stress-bench.js"></script></body>
+</html>
