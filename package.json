@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && mkdir -p dist/tests/browser && cp tests/browser/stress-bench.html tests/browser/stress-bench.js dist/tests/browser/ && mkdir -p dist/tests && cp tests/stress-data.js dist/tests/",
     "preview": "vite preview",
     "test": "node --test \"tests/**/*.test.js\"",
     "dev:worker": "wrangler dev",
