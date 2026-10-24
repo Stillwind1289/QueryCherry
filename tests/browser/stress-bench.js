@@ -27,13 +27,9 @@ return Number(value.toFixed(digits));
 
 /**
 
-* Read the raw JavaScript heap metrics exposed by Chromium.
+* Read optional Chromium JavaScript heap metrics.
 
-* 
-
-* These metrics are optional, browser-specific, and do not represent
-
-* total browser or device RAM.
+* These metrics are browser-specific and do not represent total device RAM.
   */
   function readMemory() {
   try {
@@ -59,10 +55,9 @@ return Number(value.toFixed(digits));
   totalHeapMiB: round(totalHeapBytes / MB),
   heapLimitBytes,
   heapLimitMiB: round(heapLimitBytes / MB),
-  // Preserve the raw numbers above so repeated values can be checked.
   source: 'performance.memory',
   };
-  } catch (error) {
+  } catch {
   return null;
   }
   }
@@ -100,7 +95,8 @@ const distinctValues = new Set(
 available.map((reading) => reading.usedBytes)
 );
 
-const identical = distinctValues.size === 1 && available.length > 1;
+const identical =
+distinctValues.size === 1 && available.length > 1;
 
 return {
 available: true,
@@ -110,6 +106,49 @@ distinctUsedHeapValues: distinctValues.size,
 warning: identical
 ? 'Every available used-heap reading has the same value. Verify that the browser exposes changing raw metrics before relying on memory deltas.'
 : null,
+};
+}
+
+/**
+
+* Sample memory five times while the page is idle.
+* This checks whether the reported metric changes over time.
+* It does not measure peak memory or guarantee that the metric is accurate.
+  */
+  async function testMemoryReadings() {
+  const readings = [];
+
+for (let i = 0; i < 5; i++) {
+readings.push({
+timeMs: round(performance.now()),
+memory: readMemory(),
+});
+
+if (i < 4) {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+
+}
+
+const available = readings
+.map((item) => item.memory)
+.filter(Boolean);
+
+const distinctUsedHeapValues = new Set(
+available.map((item) => item.usedBytes)
+).size;
+
+return {
+readings,
+availableReadings: available.length,
+distinctUsedHeapValues,
+changesObserved: distinctUsedHeapValues > 1,
+message:
+available.length === 0
+? 'The browser does not expose usable JavaScript heap metrics.'
+: distinctUsedHeapValues > 1
+? 'Heap readings changed while idle; the memory API returns changing values.'
+: 'Heap readings stayed identical while idle; do not rely on memory deltas until this is investigated.',
 };
 }
 
@@ -253,7 +292,8 @@ case 'timestamp':
   return {
     input: '1767225600',
     expected: (output) =>
-      typeof output === 'string' && output.includes('ISO (UTC):'),
+      typeof output === 'string' &&
+      output.includes('ISO (UTC):'),
   };
 
 case 'create-table':
@@ -374,7 +414,7 @@ return;
 setRunEnabled(false);
 setDownloadEnabled(false);
 setOutput('Preparing benchmark…');
-setStatus('Running bounded browser tests…');
+setStatus('Checking browser memory readings…');
 
 const results = [];
 const memoryReadings = [];
@@ -385,20 +425,28 @@ if (initialMemory) {
 memoryReadings.push(initialMemory);
 }
 
+let memorySelfTest;
+
 try {
-for (const tool of registry) {
-const sizes = [
-'timestamp',
-'create-table',
-'sql-dialect',
-].includes(tool.id)
-? [1]
-: [
-Math.min(100, maxRows),
-maxRows,
-].filter(
-(value, index, all) => all.indexOf(value) === index
+memorySelfTest = await testMemoryReadings();
+
+setStatus(
+  'Memory self-test complete. Running bounded browser tests…'
 );
+
+for (const tool of registry) {
+  const sizes = [
+    'timestamp',
+    'create-table',
+    'sql-dialect',
+  ].includes(tool.id)
+    ? [1]
+    : [
+        Math.min(100, maxRows),
+        maxRows,
+      ].filter(
+        (value, index, all) => all.indexOf(value) === index
+      );
 
   for (const size of sizes) {
     let config = null;
@@ -428,8 +476,7 @@ maxRows,
 
       const started = performance.now();
 
-      // This is synchronous for the existing tool runner.
-      // A same-thread timer cannot reliably observe peak heap usage here.
+      // Synchronous calls cannot reliably sample peak heap usage.
       value = execute(tool, config);
 
       elapsedMs = performance.now() - started;
@@ -461,11 +508,6 @@ maxRows,
         caught?.message || String(caught)
       }`;
 
-      if (elapsedMs === null) {
-        elapsedMs = null;
-      }
-
-      // Record an after-snapshot if execution failed.
       if (!memoryAfter) {
         memoryAfter = readMemory();
 
@@ -490,7 +532,8 @@ maxRows,
       outputBytes,
       outputMiB:
         outputBytes === null ? null : round(outputBytes / MB),
-      elapsedMs: elapsedMs === null ? null : round(elapsedMs),
+      elapsedMs:
+        elapsedMs === null ? null : round(elapsedMs),
       memory: {
         available: Boolean(memoryBefore && memoryAfter),
         before: memoryBefore,
@@ -508,8 +551,8 @@ maxRows,
       `Completed ${results.length} cases… current: ${tool.title}`
     );
 
-    // Release our references between cases. This does not guarantee
-    // that the browser immediately performs garbage collection.
+    // Release references between cases. This does not guarantee
+    // immediate garbage collection.
     config = null;
     value = null;
 
@@ -558,6 +601,7 @@ memoryGuide: {
   meaning:
     'Memory change is the difference between reported heap usage immediately before and after synchronous tool execution.',
   diagnostics: memoryDiagnostics,
+  selfTest: memorySelfTest,
   limitations: [
     'JavaScript heap is not total browser memory or total device RAM.',
     'Before/after readings can miss temporary peak allocations.',
@@ -567,6 +611,7 @@ memoryGuide: {
     'Identical readings do not prove that a tool used no additional memory.',
     'Input and output byte sizes are not measurements of actual memory consumption.',
     'A successful run does not guarantee the same input will work on every device.',
+    'The idle self-test checks whether readings change, not whether their values are accurate.',
   ],
 },
 
@@ -605,7 +650,8 @@ summary: {
   memoryUnavailable: validResults.filter(
     (result) => !result.memory?.available
   ).length,
-  identicalMemoryReadings: memoryDiagnostics.identicalUsedHeapReadings,
+  identicalMemoryReadings:
+    memoryDiagnostics.identicalUsedHeapReadings,
 },
 
 results,
@@ -613,7 +659,6 @@ results,
 };
 
 setOutput(JSON.stringify(lastReport, null, 2));
-
 setDownloadEnabled(true);
 setRunEnabled(true);
 
@@ -633,9 +678,13 @@ $('run')?.addEventListener('click', () => {
 runBenchmark().catch((caught) => {
 setRunEnabled(true);
 setDownloadEnabled(Boolean(lastReport));
+
 setStatus(
-"Benchmark failed: ${caught?.name || 'Error'}: ${ caught?.message || String(caught) }"
+  `Benchmark failed: ${caught?.name || 'Error'}: ${
+    caught?.message || String(caught)
+  }`
 );
+
 });
 });
 
