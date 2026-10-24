@@ -1,11 +1,16 @@
 <!doctype html>
-
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>QueryCherry Browser Benchmark</title>
+  <meta name="theme-color" content="#ffffff">
+  <title>QueryCherry Browser & Memory Benchmark</title>
+
   <style>
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       font-family: system-ui, sans-serif;
       max-width: 850px;
@@ -14,7 +19,17 @@
       line-height: 1.5;
       color: #222;
     }
-    h1 { font-size: 1.6rem; }
+
+    h1 {
+      font-size: 1.6rem;
+      line-height: 1.25;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin-bottom: 8px;
+    }
+
     .notice {
       background: #fff4d6;
       border: 1px solid #e5c46b;
@@ -22,14 +37,67 @@
       padding: 12px;
       margin: 16px 0;
     }
-    select, button {
+
+    .info {
+      background: #eef6ff;
+      border: 1px solid #b9d8f5;
+      border-radius: 8px;
+      padding: 12px;
+      margin: 16px 0;
+    }
+
+    .panel {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 14px;
+      margin: 16px 0;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    select,
+    button {
       font: inherit;
-      padding: 10px;
+      padding: 10px 12px;
       margin: 6px 6px 6px 0;
       max-width: 100%;
+      border: 1px solid #bbb;
+      border-radius: 6px;
     }
-    button { cursor: pointer; }
-    button:disabled { cursor: not-allowed; opacity: .6; }
+
+    select {
+      width: 100%;
+    }
+
+    button {
+      cursor: pointer;
+      background: #fff;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    #run {
+      background: #222;
+      color: #fff;
+      border-color: #222;
+    }
+
+    #status {
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    #memory-support {
+      font-size: 0.95rem;
+      overflow-wrap: anywhere;
+    }
+
     pre {
       background: #f5f5f5;
       border: 1px solid #ddd;
@@ -39,28 +107,135 @@
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       font-size: 12px;
+      max-height: 65vh;
+    }
+
+    .muted {
+      color: #555;
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 480px) {
+      body {
+        margin: 16px auto;
+        padding: 0 12px;
+      }
+
+      h1 {
+        font-size: 1.4rem;
+      }
+
+      button {
+        width: 100%;
+        margin-right: 0;
+      }
     }
   </style>
 </head>
-<body>
-  <h1>QueryCherry Browser Benchmark</h1>  <p>
-    Uses generated fake data and actual QueryCherry source functions.
-    This is a bounded performance test, not a crash-boundary test.
-  </p>  <div class="notice">
-    <strong>Safety note:</strong>
-    10,000 rows may make a phone slow or unresponsive.
-    Close unnecessary tabs and apps first. If possible, use a laptop.
-    The benchmark cannot forcibly stop a synchronous operation once it starts.
-  </div><label for="rows"><strong>Maximum row workload:</strong></label>
-<select id="rows">
-<option value="1000">1,000 rows (light)</option>
-<option value="5000" selected>5,000 rows (moderate)</option>
-<option value="10000">10,000 rows (heavy; preferably laptop)</option>
-</select>
 
-  <div>
-    <button id="run" type="button">Run browser benchmark</button>
-    <button id="download" type="button" disabled>Download JSON report</button>
-  </div>  <p id="status" role="status">Ready. Select a workload to begin.</p>
-  <pre id="output">Benchmark results will appear here.</pre>  <script type="module" src="./stress-bench.js"></script></body>
+<body>
+  <h1>QueryCherry Browser & Memory Benchmark</h1>
+
+  <p>
+    Tests actual QueryCherry source functions using generated fake data.
+    Measures execution time, correctness, input/output size, and JavaScript
+    heap changes when the browser exposes memory information.
+  </p>
+
+  <div class="notice">
+    <strong>Safety first</strong>
+    <p>
+      This is a bounded performance test, not a crash-boundary test.
+      Some operations may temporarily consume substantial memory or make
+      the browser unresponsive.
+    </p>
+    <ul>
+      <li>Start with 1,000 rows.</li>
+      <li>Use 5,000 rows only if the first run completes comfortably.</li>
+      <li>Use 10,000 rows only on a device with sufficient available memory.</li>
+      <li>Save important work and close unnecessary tabs first.</li>
+      <li>Do not repeat large-file tests on a device that previously froze.</li>
+    </ul>
+    <p>
+      The benchmark cannot forcibly interrupt a synchronous operation after
+      it starts. If the browser becomes unresponsive, wait rather than
+      repeatedly tapping the Run button.
+    </p>
+  </div>
+
+  <div class="info">
+    <strong>What the memory numbers mean</strong>
+    <p>
+      JavaScript heap measurements are estimates of memory used by JavaScript
+      objects. They are not measurements of total device RAM or a guaranteed
+      peak-memory reading. Results depend on the browser, device, garbage
+      collection, and workload.
+    </p>
+    <p class="muted">
+      Some browsers do not expose JavaScript heap measurements. Timing and
+      correctness tests can still run when memory reporting is unavailable.
+    </p>
+  </div>
+
+  <div class="panel">
+    <h2>Benchmark settings</h2>
+
+    <label for="rows">
+      <strong>Maximum row workload</strong>
+    </label>
+
+    <select id="rows">
+      <option value="1000" selected>1,000 rows — light</option>
+      <option value="5000">5,000 rows — moderate</option>
+      <option value="10000">10,000 rows — heavy</option>
+    </select>
+
+    <p class="muted">
+      This is the selected workload, not a guarantee that every tool processes
+      that many rows. Some tools have their own test-size limits.
+    </p>
+
+    <div>
+      <button id="run" type="button">Run browser benchmark</button>
+      <button id="download" type="button" disabled>
+        Download JSON report
+      </button>
+    </div>
+
+    <p id="status" role="status" aria-live="polite">
+      Ready. Start with 1,000 rows.
+    </p>
+
+    <p id="memory-support" class="muted">
+      Checking browser memory-reporting support…
+    </p>
+  </div>
+
+  <h2>Benchmark results</h2>
+
+  <pre id="output" aria-live="polite">Results will appear here after the benchmark runs.</pre>
+
+  <script>
+    (() => {
+      const support = document.getElementById("memory-support");
+
+      let supported = false;
+
+      try {
+        supported =
+          typeof performance !== "undefined" &&
+          performance.memory !== undefined &&
+          typeof performance.memory.usedJSHeapSize === "number";
+      } catch {
+        supported = false;
+      }
+
+      support.textContent = supported
+        ? "Memory reporting: available. Values are approximate JavaScript heap measurements."
+        : "Memory reporting: unavailable in this browser. Other benchmark results may still work.";
+    })();
+  </script>
+
+  <script type="module" src="./stress-bench.js"></script>
+</body>
 </html>
