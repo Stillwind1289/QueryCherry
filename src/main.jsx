@@ -1,28 +1,72 @@
+
 import React, { useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   ArrowRight, Braces, ChartNoAxesCombined, Check, ChevronDown,
   Code2, Copy, Database, FileJson, FileSpreadsheet,
-  GitCompareArrows, Heart, Menu, Minimize2, Paintbrush, Play, FileUp, Download,
-  ShieldCheck, Sparkles, Table2, WandSparkles, X, Zap
+  GitCompareArrows, Heart, Menu, Minimize2, Paintbrush, Play,
+  FileUp, Download, ShieldCheck, Sparkles, Table2, WandSparkles,
+  X, Zap
 } from 'lucide-react';
 import { categories as cats, registry } from './lib/registry.js';
 import { runTool } from './lib/runners.js';
 import { parseCSV, joinTables, TARGETS } from './lib/sql.js';
 import './styles.css';
 
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+
 const icons = {
-  'sql-format': Database, 'sql-minify': Minimize2, 'sql-case': Paintbrush, 'sql-check': ShieldCheck,
-  'sql-diff': GitCompareArrows, 'csv-sql': FileSpreadsheet, 'json-sql': FileJson, 'create-table': Database,
-  'sql-join': GitCompareArrows, 'sql-dialect': Code2, 'csv-view': Table2, 'csv-json': FileSpreadsheet,
-  'json-format': FileJson, 'json-diff': GitCompareArrows, 'clean-duplicates': Sparkles, 'sheet-tools': FileSpreadsheet,
-  'chart-csv': ChartNoAxesCombined, 'table-diff': GitCompareArrows, regex: Code2, 'json-minify': Minimize2,
+  'sql-format': Database, 'sql-minify': Minimize2,
+  'sql-case': Paintbrush, 'sql-check': ShieldCheck,
+  'sql-diff': GitCompareArrows, 'csv-sql': FileSpreadsheet,
+  'json-sql': FileJson, 'create-table': Database,
+  'sql-join': GitCompareArrows, 'sql-dialect': Code2,
+  'csv-view': Table2, 'csv-json': FileSpreadsheet,
+  'json-format': FileJson, 'json-diff': GitCompareArrows,
+  'clean-duplicates': Sparkles, 'sheet-tools': FileSpreadsheet,
+  'chart-csv': ChartNoAxesCombined, 'table-diff': GitCompareArrows,
+  regex: Code2, 'json-minify': Minimize2,
   'data-clean': WandSparkles, timestamp: Zap
 };
 
-const tools = registry.map(r => [r.id, r.title, r.desc, r.cat, icons[r.id] || Code2, r.color, r.key ? 'Ready' : undefined, r.key]);
+const tools = registry.map(r => [
+  r.id, r.title, r.desc, r.cat, icons[r.id] || Code2,
+  r.color, r.key ? 'Ready' : undefined, r.key
+]);
 
-const DIALECT_LABELS = { generic: 'Generic / ANSI', postgresql: 'PostgreSQL', mysql: 'MySQL', sqlite: 'SQLite', sqlserver: 'SQL Server' };
+const DIALECT_LABELS = {
+  generic: 'Generic / ANSI',
+  postgresql: 'PostgreSQL',
+  mysql: 'MySQL',
+  sqlite: 'SQLite',
+  sqlserver: 'SQL Server'
+};
+
+// Batch accepts only tools that operate on one input independently.
+// Multi-input comparison tools and the two-table join visualizer stay separate.
+const BATCH_EXTENSIONS = {
+  formatter: ['sql', 'txt'],
+  minifier: ['sql', 'txt'],
+  case: ['sql', 'txt'],
+  check: ['sql', 'txt'],
+  'csv-sql': ['csv', 'txt'],
+  'json-sql': ['json', 'txt'],
+  'create-table': ['txt', 'sql'],
+  'sql-dialect': ['sql', 'txt'],
+  'csv-json': ['csv', 'txt'],
+  'csv-view': ['csv', 'txt'],
+  'json-format': ['json', 'txt'],
+  'json-minify': ['json', 'txt'],
+  'clean-duplicates': ['csv', 'txt'],
+  'sheet-tools': ['csv', 'txt'],
+  'chart-csv': ['csv', 'txt'],
+  'data-clean': ['txt', 'csv'],
+  timestamp: ['txt'],
+};
+
+const BATCH_UNSUPPORTED = new Set([
+  'sql-join', 'sql-diff', 'json-diff', 'table-diff', 'regex'
+]);
 
 function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
   const blob = new Blob([text], { type: mime });
@@ -33,28 +77,64 @@ function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+
+  // Delay revocation to give the browser time to begin the download.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function safeFilename(value) {
-  return (value || 'result').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'result';
+  return (value || 'result')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'result';
+}
+
+function outputExtension(key) {
+  return ({
+    'csv-sql': 'sql',
+    'json-sql': 'sql',
+    'create-table': 'sql',
+    'sql-dialect': 'sql',
+    formatter: 'sql',
+    minifier: 'sql',
+    case: 'sql',
+    'csv-json': 'json',
+    'json-format': 'json',
+    'json-minify': 'json',
+    'csv-view': 'txt',
+    'clean-duplicates': 'txt',
+    'sheet-tools': 'csv',
+    'chart-csv': 'txt',
+    'data-clean': 'txt',
+    timestamp: 'txt',
+    check: 'txt',
+  })[key] || 'txt';
 }
 
 function csvCell(value) {
   const text = value == null ? '' : String(value);
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  return /[",\r\n]/.test(text)
+    ? `"${text.replace(/"/g, '""')}"`
+    : text;
 }
 
 function rowsToCSV(columns, rows) {
-  return [columns.map(csvCell).join(','), ...rows.map(row => row.map(csvCell).join(','))].join('\r\n');
+  return [
+    columns.map(csvCell).join(','),
+    ...rows.map(row => row.map(csvCell).join(','))
+  ].join('\r\n');
 }
 
 function JoinVisualizer() {
   const [kind, setKind] = useState('LEFT');
   const [leftName, setLeftName] = useState('users');
   const [rightName, setRightName] = useState('orders');
-  const [leftCSV, setLeftCSV] = useState('id,name\n1,Ava\n2,Noah\n3,Mia');
-  const [rightCSV, setRightCSV] = useState('id,user_id,item\n101,1,Laptop\n102,1,Mouse\n103,4,Phone');
+  const [leftCSV, setLeftCSV] = useState(
+    'id,name\n1,Ava\n2,Noah\n3,Mia'
+  );
+  const [rightCSV, setRightCSV] = useState(
+    'id,user_id,item\n101,1,Laptop\n102,1,Mouse\n103,4,Phone'
+  );
   const [fileMessage, setFileMessage] = useState('');
   const [draggingSide, setDraggingSide] = useState('');
   const [leftKey, setLeftKey] = useState('id');
@@ -62,15 +142,18 @@ function JoinVisualizer() {
 
   async function loadCSVFile(file, setter, side) {
     if (!file) return;
-    const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+
+    const ext = file.name.includes('.')
+      ? file.name.split('.').pop().toLowerCase()
+      : '';
 
     if (ext && !['csv', 'txt'].includes(ext)) {
-      setFileMessage(`Please choose a .csv or .txt file for the ${side} table.`);
+      setFileMessage(`Choose a .csv or .txt file for the ${side} table.`);
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      setFileMessage('That file is larger than 5 MB. Choose a smaller CSV file.');
+    if (file.size > MAX_FILE_SIZE) {
+      setFileMessage('The file exceeds the 5 MB limit.');
       return;
     }
 
@@ -84,10 +167,15 @@ function JoinVisualizer() {
 
   function csvDropProps(side, setter) {
     return {
-      onDragEnter: e => { e.preventDefault(); setDraggingSide(side); },
+      onDragEnter: e => {
+        e.preventDefault();
+        setDraggingSide(side);
+      },
       onDragOver: e => e.preventDefault(),
       onDragLeave: e => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setDraggingSide('');
+        if (!e.currentTarget.contains(e.relatedTarget)) {
+          setDraggingSide('');
+        }
       },
       onDrop: e => {
         e.preventDefault();
@@ -100,26 +188,48 @@ function JoinVisualizer() {
   const left = useMemo(() => {
     try {
       const p = parseCSV(leftCSV);
-      return { name: leftName.trim() || 'left_table', columns: p.headers, rows: p.rows };
+      return {
+        name: leftName.trim() || 'left_table',
+        columns: p.headers,
+        rows: p.rows
+      };
     } catch (e) {
-      return { name: leftName.trim() || 'left_table', columns: [], rows: [], error: e.message };
+      return {
+        name: leftName.trim() || 'left_table',
+        columns: [],
+        rows: [],
+        error: e.message
+      };
     }
   }, [leftCSV, leftName]);
 
   const right = useMemo(() => {
     try {
       const p = parseCSV(rightCSV);
-      return { name: rightName.trim() || 'right_table', columns: p.headers, rows: p.rows };
+      return {
+        name: rightName.trim() || 'right_table',
+        columns: p.headers,
+        rows: p.rows
+      };
     } catch (e) {
-      return { name: rightName.trim() || 'right_table', columns: [], rows: [], error: e.message };
+      return {
+        name: rightName.trim() || 'right_table',
+        columns: [],
+        rows: [],
+        error: e.message
+      };
     }
   }, [rightCSV, rightName]);
 
-  const leftCol = left.columns?.includes(leftKey) ? leftKey : left.columns?.[0] || '';
-  const rightCol = right.columns?.includes(rightKey) ? rightKey : right.columns?.[0] || '';
+  const leftCol = left.columns.includes(leftKey)
+    ? leftKey : left.columns[0] || '';
+  const rightCol = right.columns.includes(rightKey)
+    ? rightKey : right.columns[0] || '';
 
   const res = useMemo(() => {
-    if (left.error || right.error) return { error: left.error || right.error };
+    if (left.error || right.error) {
+      return { error: left.error || right.error };
+    }
     try {
       return joinTables(left, right, leftCol, rightCol, kind);
     } catch (e) {
@@ -133,16 +243,22 @@ function JoinVisualizer() {
       {t.error ? <p className="jv-error">{t.error}</p> : (
         <div className="jv-scroll">
           <table>
-            <thead><tr>{t.columns.map(c => <th key={c} scope="col">{c}</th>)}</tr></thead>
+            <thead>
+              <tr>{t.columns.map(c => (
+                <th key={c} scope="col">{c}</th>
+              ))}</tr>
+            </thead>
             <tbody>
               {t.rows.slice(0, 8).map((r, i) => (
-                <tr key={i}>{r.map((v, j) => <td key={j}>{v === '' ? <em>empty</em> : String(v)}</td>)}</tr>
+                <tr key={i}>{r.map((v, j) => (
+                  <td key={j}>{v === '' ? <em>empty</em> : String(v)}</td>
+                ))}</tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-      <small>{t.rows?.length || 0} data rows · edit CSV below</small>
+      <small>{t.rows.length} data rows · edit CSV below</small>
     </div>
   );
 
@@ -158,97 +274,111 @@ function JoinVisualizer() {
           <input value={rightName} onChange={e => setRightName(e.target.value)} />
         </label>
 
-        <div className={'jv-input' + (draggingSide === 'left' ? ' editor-dragging' : '')} {...csvDropProps('left', setLeftCSV)}>
+        <div className={'jv-input' + (draggingSide === 'left' ? ' editor-dragging' : '')}
+          {...csvDropProps('left', setLeftCSV)}>
           <span>Left table CSV</span>
           <label className="file-pick">
             <FileUp size={14} /> Upload CSV
-            <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={e => {
-              loadCSVFile(e.target.files?.[0], setLeftCSV, 'left');
-              e.target.value = '';
-            }} />
+            <input type="file" accept=".csv,.txt,text/csv,text/plain"
+              onChange={e => {
+                loadCSVFile(e.target.files?.[0], setLeftCSV, 'left');
+                e.target.value = '';
+              }} />
           </label>
-          {draggingSide === 'left' && <div className="drop-hint" role="status">Drop CSV here to load it locally 🍒</div>}
-          <textarea value={leftCSV} onChange={e => setLeftCSV(e.target.value)} spellCheck="false" aria-label="Left table CSV" />
+          {draggingSide === 'left' && <div className="drop-hint">Drop CSV here 🍒</div>}
+          <textarea value={leftCSV} onChange={e => setLeftCSV(e.target.value)}
+            spellCheck="false" aria-label="Left table CSV" />
         </div>
 
-        <div className={'jv-input' + (draggingSide === 'right' ? ' editor-dragging' : '')} {...csvDropProps('right', setRightCSV)}>
+        <div className={'jv-input' + (draggingSide === 'right' ? ' editor-dragging' : '')}
+          {...csvDropProps('right', setRightCSV)}>
           <span>Right table CSV</span>
           <label className="file-pick">
             <FileUp size={14} /> Upload CSV
-            <input type="file" accept=".csv,.txt,text/csv,text/plain" onChange={e => {
-              loadCSVFile(e.target.files?.[0], setRightCSV, 'right');
-              e.target.value = '';
-            }} />
+            <input type="file" accept=".csv,.txt,text/csv,text/plain"
+              onChange={e => {
+                loadCSVFile(e.target.files?.[0], setRightCSV, 'right');
+                e.target.value = '';
+              }} />
           </label>
-          {draggingSide === 'right' && <div className="drop-hint" role="status">Drop CSV here to load it locally 🍒</div>}
-          <textarea value={rightCSV} onChange={e => setRightCSV(e.target.value)} spellCheck="false" aria-label="Right table CSV" />
+          {draggingSide === 'right' && <div className="drop-hint">Drop CSV here 🍒</div>}
+          <textarea value={rightCSV} onChange={e => setRightCSV(e.target.value)}
+            spellCheck="false" aria-label="Right table CSV" />
         </div>
       </div>
 
       {fileMessage && <p className="file-message" role="status">{fileMessage}</p>}
 
       <div className="jv-config">
-        <label>
-          Join type
+        <label>Join type
           <select value={kind} onChange={e => setKind(e.target.value)}>
             {['INNER', 'LEFT', 'RIGHT', 'FULL'].map(k => (
-              <option key={k} value={k}>{k === 'FULL' ? 'FULL OUTER JOIN' : `${k} JOIN`}</option>
+              <option key={k} value={k}>
+                {k === 'FULL' ? 'FULL OUTER JOIN' : `${k} JOIN`}
+              </option>
             ))}
           </select>
         </label>
-        <label>
-          Left key
-          <select value={leftCol} onChange={e => setLeftKey(e.target.value)} disabled={!left.columns?.length}>
-            {(left.columns || []).map(c => <option key={c}>{c}</option>)}
+        <label>Left key
+          <select value={leftCol} onChange={e => setLeftKey(e.target.value)}
+            disabled={!left.columns.length}>
+            {left.columns.map(c => <option key={c}>{c}</option>)}
           </select>
         </label>
-        <label>
-          Right key
-          <select value={rightCol} onChange={e => setRightKey(e.target.value)} disabled={!right.columns?.length}>
-            {(right.columns || []).map(c => <option key={c}>{c}</option>)}
+        <label>Right key
+          <select value={rightCol} onChange={e => setRightKey(e.target.value)}
+            disabled={!right.columns.length}>
+            {right.columns.map(c => <option key={c}>{c}</option>)}
           </select>
         </label>
       </div>
 
-      <div className="jv-tabs" role="group" aria-label="Join type quick selector">
+      <div className="jv-tabs" role="group" aria-label="Join type">
         {['INNER', 'LEFT', 'RIGHT', 'FULL'].map(k => (
-          <button key={k} className={kind === k ? 'selected' : ''} aria-pressed={kind === k} onClick={() => setKind(k)}>
+          <button key={k} className={kind === k ? 'selected' : ''}
+            aria-pressed={kind === k} onClick={() => setKind(k)}>
             {k === 'FULL' ? 'FULL OUTER' : k}
           </button>
         ))}
       </div>
 
-      <div className="jv-sources"><Table t={left} /><Table t={right} /></div>
+      <div className="jv-sources">
+        <Table t={left} /><Table t={right} />
+      </div>
 
       {res.error ? <p className="jv-error" role="alert">{res.error}</p> : (
         <>
           <div className="jv-table">
             <div className="panel-head">
               <strong>Generated SQL</strong>
-              <button onClick={() => downloadText('querycherry-join.sql', res.sql, 'application/sql;charset=utf-8')}>
-                <Download size={13} /> Download SQL
-              </button>
+              <button onClick={() => downloadText(
+                'querycherry-join.sql', res.sql, 'application/sql;charset=utf-8'
+              )}><Download size={13} /> Download SQL</button>
             </div>
-            <pre className="filled" aria-label="Generated join SQL">{res.sql}</pre>
+            <pre className="filled">{res.sql}</pre>
           </div>
 
           <div className="jv-table jv-result">
             <div className="panel-head">
               <strong>Result ({res.rows.length} rows)</strong>
-              <button onClick={() => downloadText('querycherry-join-result.csv', rowsToCSV(res.columns, res.rows.map(r => r.cells)), 'text/csv;charset=utf-8')}>
-                <Download size={13} /> Download CSV
-              </button>
+              <button onClick={() => downloadText(
+                'querycherry-join-result.csv',
+                rowsToCSV(res.columns, res.rows.map(r => r.cells)),
+                'text/csv;charset=utf-8'
+              )}><Download size={13} /> Download CSV</button>
             </div>
             <div className="jv-scroll">
               <table>
-                <thead><tr>{res.columns.map((c, i) => <th key={`${c}-${i}`} scope="col">{c}</th>)}</tr></thead>
-                <tbody>
-                  {res.rows.map((r, i) => (
-                    <tr key={i} className={'jv-' + r.kind}>
-                      {r.cells.map((v, j) => <td key={j}>{v === null ? <em>NULL</em> : String(v)}</td>)}
-                    </tr>
-                  ))}
-                </tbody>
+                <thead><tr>{res.columns.map((c, i) => (
+                  <th key={`${c}-${i}`} scope="col">{c}</th>
+                ))}</tr></thead>
+                <tbody>{res.rows.map((r, i) => (
+                  <tr key={i} className={'jv-' + r.kind}>
+                    {r.cells.map((v, j) => (
+                      <td key={j}>{v === null ? <em>NULL</em> : String(v)}</td>
+                    ))}
+                  </tr>
+                ))}</tbody>
               </table>
             </div>
           </div>
@@ -256,9 +386,9 @@ function JoinVisualizer() {
       )}
 
       <p className="jv-legend">
-        Edit either CSV table, choose the columns to match, and switch join types.
+        Edit either CSV table, choose matching columns, and switch join types.
         Matching compares cell values as text; blank keys do not match.
-        This is an in-browser demonstration, not a connection to a database.
+        This is an in-browser demonstration, not a database connection.
       </p>
     </div>
   );
@@ -289,7 +419,38 @@ function App() {
   const [fileMessage, setFileMessage] = useState('');
   const [draggingFile, setDraggingFile] = useState(false);
 
+  const [mode, setMode] = useState('single');
+  const [batchFiles, setBatchFiles] = useState([]);
+  const [batchResults, setBatchResults] = useState([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+
   const selected = tools.find(t => t[0] === tool);
+
+  const filtered = useMemo(
+    () => cat === 'all' ? tools : tools.filter(t => t[3] === cat),
+    [cat]
+  );
+
+  function resetBatch() {
+    setBatchResults([]);
+  }
+
+  function batchExtensions(key) {
+    return BATCH_EXTENSIONS[key] || ['txt'];
+  }
+
+  function addBatchFiles(fileList) {
+    const incoming = Array.from(fileList || []);
+    if (!incoming.length) return;
+
+    setBatchFiles(current => [...current, ...incoming]);
+    resetBatch();
+  }
+
+  function removeBatchFile(index) {
+    setBatchFiles(current => current.filter((_, i) => i !== index));
+    resetBatch();
+  }
 
   async function uploadInputFile(file) {
     if (!file) return;
@@ -307,16 +468,18 @@ function App() {
       'csv-json': ['csv', 'txt']
     })[selected?.[7]] || ['sql', 'txt', 'csv', 'json', 'tsv'];
 
-    const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+    const ext = file.name.includes('.')
+      ? file.name.split('.').pop().toLowerCase()
+      : '';
 
     if (ext && !allowed.includes(ext)) {
-      setError(`This tool accepts ${allowed.map(x => '.' + x).join(', ')} files. Choose a compatible file.`);
+      setError(`This tool accepts ${allowed.map(x => '.' + x).join(', ')} files.`);
       setFileMessage('');
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      setError('This file is larger than 5 MB. Use a smaller file for reliable browser processing.');
+    if (file.size > MAX_FILE_SIZE) {
+      setError('This file exceeds the 5 MB limit. Choose a smaller file.');
       setFileMessage('');
       return;
     }
@@ -327,59 +490,17 @@ function App() {
       setError('');
       setFileMessage(`${file.name} loaded locally. Review the input, then run the tool.`);
     } catch {
-      setFileMessage(`Could not read ${file.name}. Try another plain-text, SQL, CSV, or JSON file.`);
+      setFileMessage(`Could not read ${file.name}. Try another text, SQL, CSV, or JSON file.`);
     }
   }
 
-  function downloadResult() {
-    if (!result) return;
-
-    const ext = ({
-      'csv-sql': 'sql',
-      'json-sql': 'sql',
-      'create-table': 'sql',
-      'sql-dialect': 'sql',
-      formatter: 'sql',
-      minifier: 'sql',
-      case: 'sql',
-      check: 'txt',
-      'sql-diff': 'diff',
-      'csv-json': 'json'
-    })[selected?.[7]] || 'txt';
-
-    downloadText(
-      `querycherry-${safeFilename(selected?.[1])}.${ext}`,
-      result,
-      ext === 'sql' ? 'application/sql;charset=utf-8' : 'text/plain;charset=utf-8'
-    );
-  }
-
-  const filtered = useMemo(
-    () => cat === 'all' ? tools : tools.filter(t => t[3] === cat),
-    [cat]
-  );
-
-  function openCategory(category) {
-    setCat(category);
-    setTool(null);
-    setMenu(false);
-    requestAnimationFrame(() => {
-      document.getElementById('tools')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  }
-
-  function openTool(id) {
-    const next = tools.find(t => t[0] === id);
-    if (!next?.[7]) return;
-
-    setTool(id);
-    setQuery(registry.find(r => r.id === id).sample);
-    setDialect(next[7] === 'sql-dialect' ? 'postgresql' : 'generic');
-    setResult('');
-    setError('');
-    setCopied(false);
-    setFileMessage('');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  function getToolOptions() {
+    return {
+      letter,
+      dialect,
+      stripComments,
+      table: tableName.trim() || undefined
+    };
   }
 
   function run() {
@@ -390,16 +511,104 @@ function App() {
     setCopied(false);
 
     try {
-      const output = runTool(selected[7], query, {
-        letter,
-        dialect,
-        stripComments,
-        table: tableName.trim() || undefined
-      });
-      setResult(output);
+      setResult(runTool(selected[7], query, getToolOptions()));
     } catch (e) {
       setError(e.message || 'Could not process this input.');
     }
+  }
+
+  async function runBatch() {
+    if (!selected || batchRunning || !batchFiles.length) return;
+
+    if (BATCH_UNSUPPORTED.has(selected[7]) || !BATCH_EXTENSIONS[selected[7]]) {
+      setBatchResults([{
+        name: 'Batch processing',
+        status: 'error',
+        error: 'This tool requires multiple inputs or has no single-file batch adapter. Use Single file mode.'
+      }]);
+      return;
+    }
+
+    setBatchRunning(true);
+    setBatchResults([]);
+
+    const completed = [];
+    const allowed = batchExtensions(selected[7]);
+
+    try {
+      for (let i = 0; i < batchFiles.length; i++) {
+        const file = batchFiles[i];
+        let item;
+
+        try {
+          const ext = file.name.includes('.')
+            ? file.name.split('.').pop().toLowerCase()
+            : '';
+
+          if (!file.size) {
+            throw new Error('File is empty.');
+          }
+
+          if (file.size > MAX_FILE_SIZE) {
+            throw new Error('File exceeds the 5 MB per-file limit.');
+          }
+
+          if (!ext || !allowed.includes(ext)) {
+            throw new Error(
+              `Unsupported file type. Expected ${allowed.map(x => '.' + x).join(', ')}.`
+            );
+          }
+
+          // Only one input is read and processed at a time.
+          const input = await file.text();
+          const output = runTool(selected[7], input, getToolOptions());
+
+          item = {
+            name: file.name,
+            status: 'success',
+            output
+          };
+        } catch (e) {
+          item = {
+            name: file.name,
+            status: 'error',
+            error: e?.message || 'Could not process this file.'
+          };
+        }
+
+        completed.push(item);
+        // Keep visible progress and completed results after each file.
+        setBatchResults([...completed]);
+      }
+    } finally {
+      setBatchRunning(false);
+    }
+  }
+
+  function downloadResult() {
+    if (!result || !selected) return;
+
+    const ext = outputExtension(selected[7]);
+    downloadText(
+      `querycherry-${safeFilename(selected[1])}.${ext}`,
+      result,
+      ext === 'sql' ? 'application/sql;charset=utf-8' : 'text/plain;charset=utf-8'
+    );
+  }
+
+  function downloadBatchResult(item, index) {
+    if (item.status !== 'success' || !selected) return;
+
+    const dot = item.name.lastIndexOf('.');
+    const base = dot > 0 ? item.name.slice(0, dot) : item.name;
+    const ext = outputExtension(selected[7]);
+
+    // Include the original queue index to prevent duplicate-name collisions.
+    downloadText(
+      `querycherry-${safeFilename(base)}-${index + 1}-output.${ext}`,
+      item.output,
+      ext === 'sql' ? 'application/sql;charset=utf-8' : 'text/plain;charset=utf-8'
+    );
   }
 
   async function copy() {
@@ -412,6 +621,39 @@ function App() {
     } catch {
       setError('Copy failed. Please select and copy the output manually.');
     }
+  }
+
+  function openCategory(category) {
+    setCat(category);
+    setTool(null);
+    setMenu(false);
+    requestAnimationFrame(() => {
+      document.getElementById('tools')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    });
+  }
+
+  function openTool(id) {
+    const next = tools.find(t => t[0] === id);
+    if (!next?.[7]) return;
+
+    setTool(id);
+    setQuery(registry.find(r => r.id === id).sample);
+    setDialect(id === 'sql-dialect' ? 'postgresql' : 'generic');
+    setResult('');
+    setError('');
+    setCopied(false);
+    setFileMessage('');
+    setMode('single');
+    setBatchFiles([]);
+    setBatchResults([]);
+    setBatchRunning(false);
+    setTableName('');
+    setStripComments(false);
+    setLetter('upper');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   const workflowLinkStyle = {
@@ -430,7 +672,8 @@ function App() {
   return (
     <div className="shell">
       <header className="topbar">
-        <a className="brand" href="#top" onClick={() => { setTool(null); setCat('all'); }}>
+        <a className="brand" href="#top"
+          onClick={() => { setTool(null); setCat('all'); }}>
           <Cherry />
           <span>Query<span className="red">Cherry</span></span>
         </a>
@@ -439,15 +682,20 @@ function App() {
           <a href="#tools">Tools</a>
           <a href="#workflow">Workflows</a>
           <a href="#pro">Pricing</a>
-          <a href="#tools" className="explore">Explore tools <ChevronDown size={14} /></a>
+          <a href="#tools" className="explore">
+            Explore tools <ChevronDown size={14} />
+          </a>
         </nav>
 
         <div className="head-right">
           <a className="red" href="#pro">QueryCherry Pro</a>
-          <a className="btn dark" href="#tools">Explore tools <ArrowRight size={15} /></a>
+          <a className="btn dark" href="#tools">
+            Explore tools <ArrowRight size={15} />
+          </a>
         </div>
 
-        <button className="menu-btn" onClick={() => setMenu(!menu)} aria-label="Toggle menu">
+        <button className="menu-btn" onClick={() => setMenu(!menu)}
+          aria-label="Toggle menu">
           {menu ? <X /> : <Menu />}
         </button>
       </header>
@@ -469,10 +717,17 @@ function App() {
             <h1>Your data tools,<br /><span>all in one place.</span></h1>
             <p>SQL, structured data, and developer utilities that make everyday work feel easier.</p>
             <div className="hero-actions">
-              <a className="btn primary" href="#tools">Explore the tools <ArrowRight size={17} /></a>
-              <a className="text-link" href="#workflow">See how it fits together <ArrowRight size={15} /></a>
+              <a className="btn primary" href="#tools">
+                Explore the tools <ArrowRight size={17} />
+              </a>
+              <a className="text-link" href="#workflow">
+                See how it fits together <ArrowRight size={15} />
+              </a>
             </div>
-            <div className="hero-note"><ShieldCheck size={16} /> Browser-first by design <b>·</b> No account needed for basic tools</div>
+            <div className="hero-note">
+              <ShieldCheck size={16} /> Browser-first by design
+              <b>·</b> No account needed for basic tools
+            </div>
             <div className="floating f1"><Database size={20} /> SELECT * FROM ideas</div>
             <div className="floating f2"><Braces size={20} /> {'{'} clean data {'}'}</div>
             <div className="hero-cherry"><Cherry /></div>
@@ -490,7 +745,8 @@ function App() {
 
             <div className="categories">
               {cats.map(c => (
-                <button key={c[0]} className={cat === c[0] ? 'selected' : ''} aria-pressed={cat === c[0]} onClick={() => setCat(c[0])}>
+                <button key={c[0]} className={cat === c[0] ? 'selected' : ''}
+                  aria-pressed={cat === c[0]} onClick={() => setCat(c[0])}>
                   {c[1]}
                 </button>
               ))}
@@ -500,11 +756,15 @@ function App() {
               {filtered.map(t => {
                 const Icon = t[4];
                 return (
-                  <button className={'tool-card' + (t[7] ? '' : ' planned')} key={t[0]} onClick={() => openTool(t[0])} disabled={!t[7]} aria-disabled={!t[7]}>
+                  <button className={'tool-card' + (!t[7] ? ' planned' : '')}
+                    key={t[0]} onClick={() => openTool(t[0])}
+                    disabled={!t[7]} aria-disabled={!t[7]}>
                     <span className={'tool-icon ' + t[5]}><Icon size={22} /></span>
                     <strong>{t[1]}{!t[7] && <i className="soon" />}</strong>
                     <p>{t[2]}</p>
-                    <span className={'card-bottom ' + (t[7] ? 'ready' : '')}>{t[7] ? 'Open tool' : 'Planned'} <ArrowRight size={14} /></span>
+                    <span className={'card-bottom ' + (t[7] ? 'ready' : '')}>
+                      {t[7] ? 'Open tool' : 'Planned'} <ArrowRight size={14} />
+                    </span>
                   </button>
                 );
               })}
@@ -528,7 +788,10 @@ function App() {
                   <div className="workflow-body">
                     <h3>Write cleaner SQL</h3>
                     <p>Turn hard-to-scan queries into something you can actually read.</p>
-                    <button type="button" style={workflowLinkStyle} onClick={() => openCategory('sql')}>SQL utilities <ArrowRight size={14} /></button>
+                    <button type="button" style={workflowLinkStyle}
+                      onClick={() => openCategory('sql')}>
+                      SQL utilities <ArrowRight size={14} />
+                    </button>
                   </div>
                 </article>
 
@@ -540,7 +803,10 @@ function App() {
                   <div className="workflow-body">
                     <h3>Get data into shape</h3>
                     <p>Clean, convert, and compare data without a complicated setup.</p>
-                    <button type="button" style={workflowLinkStyle} onClick={() => openCategory('clean')}>Data utilities <ArrowRight size={14} /></button>
+                    <button type="button" style={workflowLinkStyle}
+                      onClick={() => openCategory('clean')}>
+                      Data utilities <ArrowRight size={14} />
+                    </button>
                   </div>
                 </article>
 
@@ -552,7 +818,10 @@ function App() {
                   <div className="workflow-body">
                     <h3>See the bigger picture</h3>
                     <p>Move from raw values toward useful summaries and visuals.</p>
-                    <button type="button" style={workflowLinkStyle} onClick={() => openCategory('visual')}>Analysis tools <ArrowRight size={14} /></button>
+                    <button type="button" style={workflowLinkStyle}
+                      onClick={() => openCategory('visual')}>
+                      Analysis tools <ArrowRight size={14} />
+                    </button>
                   </div>
                 </article>
               </div>
@@ -593,11 +862,12 @@ function App() {
           <footer>
             <div className="footer-grid">
               <div className="footer-brand">
-                <a className="brand" href="#top"><Cherry /><span>Query<span className="red">Cherry</span></span></a>
+                <a className="brand" href="#top">
+                  <Cherry /><span>Query<span className="red">Cherry</span></span>
+                </a>
                 <p>Useful data tools, with a little more personality.</p>
                 <small>Built thoughtfully, one tool at a time. 🍒</small>
               </div>
-
               <div>
                 <h4>TOOLS</h4>
                 <a href="#tools" onClick={() => setCat('sql')}>SQL tools</a>
@@ -605,14 +875,12 @@ function App() {
                 <a href="#tools" onClick={() => setCat('json')}>JSON tools</a>
                 <a href="#tools" onClick={() => setCat('dev')}>Developer utilities</a>
               </div>
-
               <div>
                 <h4>QUERYCHERRY</h4>
                 <a href="#workflow">How it works</a>
                 <a href="#pro">Pricing</a>
                 <a href="#tools">Roadmap</a>
               </div>
-
               <div>
                 <h4>GOOD TO KNOW</h4>
                 <a href="/privacy.html">Privacy Policy</a>
@@ -620,7 +888,6 @@ function App() {
                 <a href="mailto:QueryCherry.Support@gmail.com">Contact Support</a>
               </div>
             </div>
-
             <div className="footer-bottom">
               <span>© 2026 QueryCherry</span>
               <span>Made with a little extra 🍒</span>
@@ -632,7 +899,9 @@ function App() {
           <button className="back" onClick={() => setTool(null)}>← Back to all tools</button>
 
           <div className="workspace-title">
-            <span className={'tool-icon large ' + selected[5]}>{React.createElement(selected[4], { size: 28 })}</span>
+            <span className={'tool-icon large ' + selected[5]}>
+              {React.createElement(selected[4], { size: 28 })}
+            </span>
             <div>
               <div className="eyebrow mini">QUERYCHERRY · {selected[3].toUpperCase()} TOOLS</div>
               <h1>{selected[1]}</h1>
@@ -641,94 +910,234 @@ function App() {
           </div>
 
           {selected[7] === 'sql-join' ? <JoinVisualizer /> : (
-            <div className="editors">
-              <section className={'editor' + (draggingFile ? ' editor-dragging' : '')}
-                onDragEnter={e => { e.preventDefault(); setDraggingFile(true); }}
-                onDragOver={e => e.preventDefault()}
-                onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDraggingFile(false); }}
-                onDrop={e => { e.preventDefault(); setDraggingFile(false); uploadInputFile(e.dataTransfer.files?.[0]); }}>
-                <div className="panel-head">
-                  <b>Input</b>
-                  <div className="panel-tools">
-                    <label className="file-pick">
-                      <FileUp size={13} /> Upload file
-                      <input type="file" accept=".sql,.txt,.csv,.json,.tsv,text/plain,text/csv,application/json" onChange={e => {
-                        uploadInputFile(e.target.files?.[0]);
+            <>
+              <div className="batch-mode-switch" role="group" aria-label="Processing mode">
+                <button type="button" className={mode === 'single' ? 'selected' : ''}
+                  aria-pressed={mode === 'single'} onClick={() => setMode('single')}>
+                  Single file
+                </button>
+                <button type="button" className={mode === 'batch' ? 'selected' : ''}
+                  aria-pressed={mode === 'batch'}
+                  disabled={BATCH_UNSUPPORTED.has(selected[7]) || !BATCH_EXTENSIONS[selected[7]]}
+                  title={BATCH_UNSUPPORTED.has(selected[7]) || !BATCH_EXTENSIONS[selected[7]]
+                    ? 'This tool needs multiple inputs or is not supported in batch mode'
+                    : undefined}
+                  onClick={() => setMode('batch')}>
+                  Batch processing
+                </button>
+              </div>
+
+              {mode === 'single' ? (
+                <div className="editors">
+                  <section className={'editor' + (draggingFile ? ' editor-dragging' : '')}
+                    onDragEnter={e => { e.preventDefault(); setDraggingFile(true); }}
+                    onDragOver={e => e.preventDefault()}
+                    onDragLeave={e => {
+                      if (!e.currentTarget.contains(e.relatedTarget)) setDraggingFile(false);
+                    }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      setDraggingFile(false);
+                      uploadInputFile(e.dataTransfer.files?.[0]);
+                    }}>
+                    <div className="panel-head">
+                      <b>Input</b>
+                      <div className="panel-tools">
+                        <label className="file-pick">
+                          <FileUp size={13} /> Upload file
+                          <input type="file"
+                            accept=".sql,.txt,.csv,.json,.tsv,text/plain,text/csv,application/json"
+                            onChange={e => {
+                              uploadInputFile(e.target.files?.[0]);
+                              e.target.value = '';
+                            }} />
+                        </label>
+                        <button onClick={() => {
+                          setQuery(registry.find(r => r.id === tool).sample);
+                          setResult('');
+                          setError('');
+                          setCopied(false);
+                          setFileMessage('');
+                        }}>Load sample</button>
+                      </div>
+                    </div>
+
+                    {fileMessage && <p className="file-message" role="status">{fileMessage}</p>}
+                    {draggingFile && <div className="drop-hint" role="status">Drop your file to load it locally 🍒</div>}
+
+                    <textarea value={query} onChange={e => {
+                      setQuery(e.target.value);
+                      setError('');
+                    }} spellCheck="false" aria-label={registry.find(r => r.id === tool).label} />
+
+                    <div className="editor-actions">
+                      {['csv-sql', 'json-sql', 'create-table', 'sql-dialect'].includes(selected[7]) && (
+                        <label className="opt">
+                          {selected[7] === 'sql-dialect' ? 'Target' : 'Dialect'}
+                          <select value={dialect} onChange={e => setDialect(e.target.value)}>
+                            {(selected[7] === 'sql-dialect' ? TARGETS : Object.keys(DIALECT_LABELS)).map(d => (
+                              <option key={d} value={d}>{DIALECT_LABELS[d]}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+
+                      {['csv-sql', 'json-sql'].includes(selected[7]) && (
+                        <label className="opt">
+                          Table name
+                          <input value={tableName} onChange={e => setTableName(e.target.value)}
+                            placeholder="your_table" spellCheck="false" />
+                        </label>
+                      )}
+
+                      {selected[7] === 'minifier' && (
+                        <label className="opt">
+                          <input type="checkbox" checked={stripComments}
+                            onChange={e => setStripComments(e.target.checked)} />
+                          Remove comments
+                        </label>
+                      )}
+
+                      {selected[7] === 'case' && (
+                        <select value={letter} onChange={e => setLetter(e.target.value)}
+                          aria-label="Keyword case">
+                          <option value="upper">UPPERCASE keywords</option>
+                          <option value="lower">lowercase keywords</option>
+                        </select>
+                      )}
+
+                      <small>{selected[7] === 'csv-json'
+                        ? 'CSV is processed locally in your browser'
+                        : 'Runs locally in your browser'}</small>
+                      <button className="btn primary" onClick={run}>
+                        <Play size={14} />{registry.find(r => r.id === tool).action}
+                      </button>
+                    </div>
+                  </section>
+
+                  <section className="editor">
+                    <div className="panel-head">
+                      <b>Output</b>
+                      <div className="panel-tools">
+                        <button onClick={copy} disabled={!result}>
+                          {copied ? '✓ Copied' : <><Copy size={13} /> Copy</>}
+                        </button>
+                        <button onClick={downloadResult} disabled={!result}>
+                          <Download size={13} /> Download
+                        </button>
+                      </div>
+                    </div>
+                    {error && <p role="alert" style={{ color: '#c0392b', padding: '12px' }}>{error}</p>}
+                    <pre className={result ? 'filled' : ''} aria-live="polite" aria-label="Result">
+                      {result || (error ? 'Fix the input and try again.' : 'Your result will appear here…')}
+                    </pre>
+                    <div className="output-foot">
+                      {result ? `${result.length} characters` : 'Run the tool to see your output'}
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <section className="editor batch-editor">
+                  <div className="panel-head">
+                    <b>Batch input</b>
+                    <span>{batchFiles.length} file(s) · 5 MB max per file</span>
+                  </div>
+                  <p className="batch-help">
+                    Run <strong>{selected[1]}</strong> on each compatible file in sequence.
+                    Files are processed in your browser. One failed file won't stop the rest.
+                  </p>
+
+                  <label className="file-pick batch-picker">
+                    <FileUp size={14} /> Choose multiple files
+                    <input type="file" multiple
+                      accept={batchExtensions(selected[7]).map(ext => '.' + ext).join(',')}
+                      onChange={e => {
+                        addBatchFiles(e.target.files);
                         e.target.value = '';
                       }} />
-                    </label>
-                    <button onClick={() => {
-                      setQuery(registry.find(r => r.id === tool).sample);
-                      setResult('');
-                      setError('');
-                      setCopied(false);
-                      setFileMessage('');
-                    }}>Load sample</button>
+                  </label>
+
+                  {batchFiles.length > 0 && (
+                    <div className="batch-file-list">
+                      {batchFiles.map((file, i) => (
+                        <div className="batch-file-row" key={`${file.name}-${i}`}>
+                          <span>{file.name}</span>
+                          <small>{(file.size / 1024).toFixed(1)} KB</small>
+                          <button type="button" disabled={batchRunning}
+                            onClick={() => removeBatchFile(i)}>Remove</button>
+                        </div>
+                      ))}
+                      <button type="button" className="batch-clear"
+                        disabled={batchRunning}
+                        onClick={() => { setBatchFiles([]); setBatchResults([]); }}>
+                        Clear files
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="editor-actions">
+                    <small>Files over 5 MB and empty files will be reported individually.</small>
+                    <button className="btn primary" type="button"
+                      onClick={runBatch}
+                      disabled={!batchFiles.length || batchRunning}>
+                      <Play size={14} />{batchRunning ? 'Processing…' : 'Process batch'}
+                    </button>
                   </div>
-                </div>
 
-                {fileMessage && <p className="file-message" role="status">{fileMessage}</p>}
-                {draggingFile && <div className="drop-hint" role="status">Drop your file to load it locally 🍒</div>}
-
-                <textarea value={query} onChange={e => {
-                  setQuery(e.target.value);
-                  setError('');
-                }} spellCheck="false" aria-label={registry.find(r => r.id === tool).label} />
-
-                <div className="editor-actions">
-                  {['csv-sql', 'json-sql', 'create-table', 'sql-dialect'].includes(selected[7]) && (
-                    <label className="opt">
-                      {selected[7] === 'sql-dialect' ? 'Target' : 'Dialect'}
-                      <select value={dialect} onChange={e => setDialect(e.target.value)}>
-                        {(selected[7] === 'sql-dialect' ? TARGETS : Object.keys(DIALECT_LABELS)).map(d => (
-                          <option key={d} value={d}>{DIALECT_LABELS[d]}</option>
-                        ))}
-                      </select>
-                    </label>
+                  {batchRunning && (
+                    <p className="batch-help" role="status">
+                      Processed {batchResults.length} of {batchFiles.length} files…
+                    </p>
                   )}
 
-                  {['csv-sql', 'json-sql'].includes(selected[7]) && (
-                    <label className="opt">
-                      Table name
-                      <input value={tableName} onChange={e => setTableName(e.target.value)} placeholder="your_table" spellCheck="false" />
-                    </label>
+                  {batchResults.length > 0 && (
+                    <div className="batch-results" aria-live="polite">
+                      <div className="panel-head">
+                        <b>Batch results</b>
+                        <span>
+                          {batchResults.filter(x => x.status === 'success').length} succeeded ·{' '}
+                          {batchResults.filter(x => x.status === 'error').length} failed
+                        </span>
+                      </div>
+
+                      {batchResults.map((item, i) => (
+                        <article className={'batch-result ' + item.status} key={i}>
+                          <div className="batch-result-heading">
+                            <div>
+                              <strong>{item.name}</strong>
+                              <small>{item.status === 'success'
+                                ? `${item.output.length.toLocaleString()} output characters`
+                                : 'Could not process this file'}</small>
+                            </div>
+                            <span className={'batch-status ' + item.status}>
+                              {item.status === 'success' ? 'Succeeded' : 'Failed'}
+                            </span>
+                          </div>
+
+                          {item.status === 'error' ? (
+                            <p role="alert">{item.error}</p>
+                          ) : (
+                            <div className="batch-result-actions">
+                              <button type="button" onClick={() => downloadBatchResult(item, i)}>
+                                <Download size={13} /> Download output
+                              </button>
+                              <details>
+                                <summary>Preview output</summary>
+                                <pre>{item.output.slice(0, 12000)}
+                                  {item.output.length > 12000
+                                    ? '\n… preview truncated; download for the full output.'
+                                    : ''}
+                                </pre>
+                              </details>
+                            </div>
+                          )}
+                        </article>
+                      ))}
+                    </div>
                   )}
-
-                  {selected[7] === 'minifier' && (
-                    <label className="opt">
-                      <input type="checkbox" checked={stripComments} onChange={e => setStripComments(e.target.checked)} /> Remove comments
-                    </label>
-                  )}
-
-                  {selected[7] === 'case' && (
-                    <select value={letter} onChange={e => setLetter(e.target.value)} aria-label="Keyword case">
-                      <option value="upper">UPPERCASE keywords</option>
-                      <option value="lower">lowercase keywords</option>
-                    </select>
-                  )}
-
-                  <small>{selected[7] === 'csv-json' ? 'CSV is processed locally in your browser' : 'Runs locally in your browser'}</small>
-                  <button className="btn primary" onClick={run}><Play size={14} />{registry.find(r => r.id === tool).action}</button>
-                </div>
-              </section>
-
-              <section className="editor">
-                <div className="panel-head">
-                  <b>Output</b>
-                  <div className="panel-tools">
-                    <button onClick={copy} disabled={!result}>{copied ? '✓ Copied' : <><Copy size={13} /> Copy</>}</button>
-                    <button onClick={downloadResult} disabled={!result}><Download size={13} /> Download</button>
-                  </div>
-                </div>
-
-                {error && <p role="alert" style={{ color: '#c0392b', padding: '12px' }}>{error}</p>}
-
-                <pre className={result ? 'filled' : ''} aria-live="polite" aria-label="Result">
-                  {result || (error ? 'Fix the input and try again.' : 'Your result will appear here…')}
-                </pre>
-                <div className="output-foot">{result ? `${result.length} characters` : 'Run the tool to see your output'}</div>
-              </section>
-            </div>
+                </section>
+              )}
+            </>
           )}
 
           <div className="note">
@@ -740,8 +1149,8 @@ function App() {
                 'csv-sql': 'Runs locally in your browser. Empty cells become NULL; other values are quoted strings. Replace the placeholder table name before running anything.',
                 'json-sql': 'Runs locally in your browser. Nested objects are rejected. Replace the placeholder table name before running anything.',
                 check: 'This is a lightweight heuristic check, not a SQL parser. A clean result does not guarantee that your database will accept the query.',
-                'sql-dialect': 'Only a few constructs are rewritten (identifier quotes, IFNULL, NOW, LIMIT/FETCH). Everything else is flagged or left as is. Review the result; it is not guaranteed to behave identically.',
-                'create-table': 'Types and constraints are checked against a fixed allow-list. Types are not translated between databases; confirm them for yours.',
+                'sql-dialect': 'Only a few constructs are rewritten (identifier quotes, IFNULL, NOW, LIMIT/FETCH). Review the result; behavior is not guaranteed to be identical.',
+                'create-table': 'Types and constraints are checked against a fixed allow-list. Confirm types for your database.',
                 minifier: 'Comments are kept unless you tick Remove comments. Strings and quoted names are never changed.',
                 'sql-join': 'A fixed demonstration on sample tables; it does not run your SQL.'
               })[selected[7]] || 'Runs locally in your browser. Test important queries against your own database and dialect before production use.'}</p>
@@ -760,4 +1169,3 @@ function App() {
 }
 
 createRoot(document.getElementById('root')).render(<App />);
-
