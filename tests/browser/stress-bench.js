@@ -16,10 +16,12 @@ let lastReport = null;
 
 const MB = 1024 * 1024;
 
-const bytes = (value) =>
-new TextEncoder().encode(
-typeof value === 'string' ? value : JSON.stringify(value)
-).length;
+function bytes(value) {
+const text =
+typeof value === 'string' ? value : JSON.stringify(value);
+
+return new TextEncoder().encode(text ?? '').length;
+}
 
 function round(value, digits = 3) {
 return Number(value.toFixed(digits));
@@ -29,7 +31,13 @@ return Number(value.toFixed(digits));
 
 * Read optional Chromium JavaScript heap metrics.
 
-* These metrics are browser-specific and do not represent total device RAM.
+* 
+
+* IMPORTANT:
+
+* Availability does not guarantee that the metrics are changing,
+
+* accurate, or useful for comparing individual tool executions.
   */
   function readMemory() {
   try {
@@ -62,18 +70,29 @@ return Number(value.toFixed(digits));
   }
   }
 
-function memoryDifference(before, after) {
+function memoryDifference(before, after, diagnostics) {
 if (!before || !after) {
-return null;
+return {
+available: false,
+deltaBytes: null,
+deltaMiB: null,
+trustworthy: false,
+note: 'One or both heap snapshots were unavailable.',
+};
 }
 
 const deltaBytes = after.usedBytes - before.usedBytes;
 
+const trustworthy = diagnostics?.usableForDeltas === true;
+
 return {
+available: true,
 deltaBytes,
 deltaMiB: round(deltaBytes / MB),
-note:
-'Difference between two heap snapshots. This is not peak memory or exact memory attributable to the tool.',
+trustworthy,
+note: trustworthy
+? 'Difference between two heap snapshots only. This is not peak memory or exact memory attributable to the tool.'
+: 'UNVERIFIED: browser heap readings failed the reliability check or have not been verified. This delta must not be treated as a reliable measure of memory usage.',
 };
 }
 
@@ -84,10 +103,12 @@ if (available.length === 0) {
 return {
 available: false,
 readings: 0,
-identicalUsedHeapReadings: false,
 distinctUsedHeapValues: 0,
+identicalUsedHeapReadings: false,
+usableForDeltas: false,
+status: 'unavailable',
 warning:
-'No supported JavaScript heap readings were available. Memory usage cannot be evaluated from this report.',
+'No usable JavaScript heap readings were exposed by this browser.',
 };
 }
 
@@ -95,25 +116,31 @@ const distinctValues = new Set(
 available.map((reading) => reading.usedBytes)
 );
 
-const identical =
-distinctValues.size === 1 && available.length > 1;
+const identical = distinctValues.size === 1;
 
 return {
 available: true,
 readings: available.length,
-identicalUsedHeapReadings: identical,
 distinctUsedHeapValues: distinctValues.size,
+identicalUsedHeapReadings: identical,
+usableForDeltas: false,
+status: identical
+? 'unverified-identical-readings'
+: 'unverified-changing-readings',
 warning: identical
-? 'Every available used-heap reading has the same value. Verify that the browser exposes changing raw metrics before relying on memory deltas.'
-: null,
+? 'All available used-heap readings are identical. The browser metric may be fixed, rounded, cached, or otherwise unsuitable for measuring changes. The cause cannot be determined from this report.'
+: 'Heap readings changed, but changing values alone do not establish that the metric accurately measures per-tool memory usage.',
+note:
+'This benchmark never treats performance.memory deltas as verified memory measurements. A separate validation against a trustworthy browser profiling method is required.',
 };
 }
 
 /**
 
 * Sample memory five times while the page is idle.
-* This checks whether the reported metric changes over time.
-* It does not measure peak memory or guarantee that the metric is accurate.
+* 
+* This is a diagnostic only. It does not measure peak memory and
+* cannot prove the reported values are accurate.
   */
   async function testMemoryReadings() {
   const readings = [];
@@ -143,12 +170,18 @@ readings,
 availableReadings: available.length,
 distinctUsedHeapValues,
 changesObserved: distinctUsedHeapValues > 1,
+status:
+available.length === 0
+? 'unavailable'
+: distinctUsedHeapValues === 1
+? 'identical-readings'
+: 'changing-readings',
 message:
 available.length === 0
 ? 'The browser does not expose usable JavaScript heap metrics.'
-: distinctUsedHeapValues > 1
-? 'Heap readings changed while idle; the memory API returns changing values.'
-: 'Heap readings stayed identical while idle; do not rely on memory deltas until this is investigated.',
+: distinctUsedHeapValues === 1
+? 'Heap readings stayed identical while idle. Treat the memory metric as unverified.'
+: 'Heap readings changed while idle, but accuracy is still unverified.',
 };
 }
 
@@ -425,13 +458,14 @@ if (initialMemory) {
 memoryReadings.push(initialMemory);
 }
 
-let memorySelfTest;
+let memorySelfTest = null;
+let runnerError = null;
 
 try {
 memorySelfTest = await testMemoryReadings();
 
 setStatus(
-  'Memory self-test complete. Running bounded browser tests…'
+  'Memory diagnostic complete. Running bounded browser tests…'
 );
 
 for (const tool of registry) {
@@ -450,7 +484,7 @@ for (const tool of registry) {
 
   for (const size of sizes) {
     let config = null;
-    let value;
+    let value = null;
     let inputBytes = null;
     let outputBytes = null;
     let correctness = false;
@@ -517,9 +551,13 @@ for (const tool of registry) {
       }
     }
 
+    // Do not assess whether deltas are trustworthy until all
+    // readings have been collected. All deltas are therefore
+    // explicitly unverified in this report.
     const memoryChange = memoryDifference(
       memoryBefore,
-      memoryAfter
+      memoryAfter,
+      null
     );
 
     results.push({
@@ -540,7 +578,7 @@ for (const tool of registry) {
         after: memoryAfter,
         change: memoryChange,
         measurement:
-          'JavaScript heap snapshots immediately before and after synchronous execution; not peak memory.',
+          'Unverified before/after JavaScript heap snapshots. Not peak memory and not a reliable measure of memory attributable to this tool.',
       },
       correctness,
       status,
@@ -561,12 +599,15 @@ for (const tool of registry) {
 }
 
 } catch (caught) {
-results.push({
+runnerError = {
 toolId: null,
 tool: 'Benchmark runner',
 status: 'error',
 error: "${caught?.name || 'Error'}: ${ caught?.message || String(caught) }",
-});
+};
+
+results.push(runnerError);
+
 }
 
 const finalMemory = readMemory();
@@ -591,27 +632,29 @@ environment: {
   deviceMemoryGB: navigator.deviceMemory ?? null,
   hardwareConcurrency: navigator.hardwareConcurrency ?? null,
   memoryMeasurement: memoryAvailable
-    ? 'JavaScript heap snapshots available; peak usage is not measured'
-    : 'Browser did not expose the required JavaScript heap metrics',
+    ? 'Heap snapshots exposed, but memory accuracy is unverified; do not use deltas to estimate tool memory consumption.'
+    : 'Browser did not expose the required JavaScript heap metrics.',
 },
 
 memoryGuide: {
   units: 'Bytes and MiB; 1 MiB = 1,048,576 bytes',
   metric: 'performance.memory, when exposed by the browser',
   meaning:
-    'Memory change is the difference between reported heap usage immediately before and after synchronous tool execution.',
+    'Optional heap snapshots before and after synchronous execution. They do not measure peak memory or total device RAM.',
   diagnostics: memoryDiagnostics,
   selfTest: memorySelfTest,
   limitations: [
     'JavaScript heap is not total browser memory or total device RAM.',
     'Before/after readings can miss temporary peak allocations.',
     'Synchronous work blocks same-thread timers, so this benchmark does not sample peak memory during a tool call.',
-    'Garbage collection can make memory change negative.',
+    'Garbage collection can make a before/after difference negative.',
     'The reported heap can include allocations unrelated to the current tool.',
     'Identical readings do not prove that a tool used no additional memory.',
+    'Changing readings alone do not prove that the metric is accurate.',
     'Input and output byte sizes are not measurements of actual memory consumption.',
     'A successful run does not guarantee the same input will work on every device.',
     'The idle self-test checks whether readings change, not whether their values are accurate.',
+    'All memory deltas are marked unverified until the metric is independently validated.',
   ],
 },
 
@@ -632,7 +675,7 @@ memory: {
   beforeBenchmark: initialMemory,
   afterBenchmark: finalMemory,
   note:
-    'These are heap snapshots, not total device RAM or benchmark peak memory.',
+    'These are unverified heap snapshots, not total device RAM or benchmark peak memory.',
 },
 
 totalElapsedMs: round(performance.now() - startedAll),
@@ -652,6 +695,8 @@ summary: {
   ).length,
   identicalMemoryReadings:
     memoryDiagnostics.identicalUsedHeapReadings,
+  memoryDeltasTrustworthy: false,
+  runnerFailed: Boolean(runnerError),
 },
 
 results,
@@ -662,13 +707,16 @@ setOutput(JSON.stringify(lastReport, null, 2));
 setDownloadEnabled(true);
 setRunEnabled(true);
 
+const summary = lastReport.summary;
+
 setStatus(
-"Finished: ${lastReport.summary.ok} passed, " +
-"${lastReport.summary.incorrect} incorrect, " +
-"${lastReport.summary.errors} errors. " +
-"${lastReport.summary.memoryMeasured} cases have memory readings." +
+"Finished: ${summary.ok} passed, " +
+"${summary.incorrect} incorrect, " +
+"${summary.errors} errors. " +
+"${summary.memoryMeasured} cases have heap snapshots. " +
+'Memory deltas are unverified and should not be used to estimate memory consumption.' +
 (memoryDiagnostics.identicalUsedHeapReadings
-? ' Warning: all available heap readings were identical; treat memory deltas as uninformative.'
+? ' All available heap readings were identical.'
 : '') +
 ' Download the report.'
 );
