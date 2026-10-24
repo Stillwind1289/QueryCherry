@@ -12,14 +12,14 @@ makeText,
 } from '../stress-data.js';
 
 const $ = (id) => document.getElementById(id);
-let lastReport;
+let lastReport = null;
+
+const MB = 1024 * 1024;
 
 const bytes = (value) =>
 new TextEncoder().encode(
 typeof value === 'string' ? value : JSON.stringify(value)
 ).length;
-
-const MB = 1024 * 1024;
 
 function round(value, digits = 3) {
 return Number(value.toFixed(digits));
@@ -27,39 +27,89 @@ return Number(value.toFixed(digits));
 
 /**
 
-* Chromium exposes performance.memory in some browsers.
-* This is JavaScript heap information, NOT total device RAM.
+* Read the raw JavaScript heap metrics exposed by Chromium.
+
+* 
+
+* These metrics are optional, browser-specific, and do not represent
+
+* total browser or device RAM.
   */
   function readMemory() {
+  try {
   const memory = performance.memory;
-
-if (
-!memory ||
-!Number.isFinite(memory.usedJSHeapSize)
-) {
-return null;
-}
-
-return {
-usedBytes: memory.usedJSHeapSize,
-usedMB: round(memory.usedJSHeapSize / MB),
-totalHeapBytes: memory.totalJSHeapSize,
-totalHeapMB: round(memory.totalJSHeapSize / MB),
-heapLimitBytes: memory.jsHeapSizeLimit,
-heapLimitMB: round(memory.jsHeapSizeLimit / MB),
-};
-}
+  
+  if (
+  !memory ||
+  !Number.isFinite(memory.usedJSHeapSize) ||
+  !Number.isFinite(memory.totalJSHeapSize) ||
+  !Number.isFinite(memory.jsHeapSizeLimit)
+  ) {
+  return null;
+  }
+  
+  const usedBytes = memory.usedJSHeapSize;
+  const totalHeapBytes = memory.totalJSHeapSize;
+  const heapLimitBytes = memory.jsHeapSizeLimit;
+  
+  return {
+  usedBytes,
+  usedMiB: round(usedBytes / MB),
+  totalHeapBytes,
+  totalHeapMiB: round(totalHeapBytes / MB),
+  heapLimitBytes,
+  heapLimitMiB: round(heapLimitBytes / MB),
+  // Preserve the raw numbers above so repeated values can be checked.
+  source: 'performance.memory',
+  };
+  } catch (error) {
+  return null;
+  }
+  }
 
 function memoryDifference(before, after) {
-if (!before || !after) return null;
+if (!before || !after) {
+return null;
+}
 
 const deltaBytes = after.usedBytes - before.usedBytes;
 
 return {
 deltaBytes,
-deltaMB: round(deltaBytes / MB),
-// Negative values are possible when garbage collection occurs.
-note: 'Change in reported heap usage; not peak memory or exact memory attributable to this tool.',
+deltaMiB: round(deltaBytes / MB),
+note:
+'Difference between two heap snapshots. This is not peak memory or exact memory attributable to the tool.',
+};
+}
+
+function getMemoryDiagnostics(readings) {
+const available = readings.filter(Boolean);
+
+if (available.length === 0) {
+return {
+available: false,
+readings: 0,
+identicalUsedHeapReadings: false,
+distinctUsedHeapValues: 0,
+warning:
+'No supported JavaScript heap readings were available. Memory usage cannot be evaluated from this report.',
+};
+}
+
+const distinctValues = new Set(
+available.map((reading) => reading.usedBytes)
+);
+
+const identical = distinctValues.size === 1 && available.length > 1;
+
+return {
+available: true,
+readings: available.length,
+identicalUsedHeapReadings: identical,
+distinctUsedHeapValues: distinctValues.size,
+warning: identical
+? 'Every available used-heap reading has the same value. Verify that the browser exposes changing raw metrics before relying on memory deltas.'
+: null,
 };
 }
 
@@ -92,50 +142,57 @@ case 'sql-diff':
   return {
     input: makeSQL(Math.min(n, 200)),
     options: {},
-    expected: (o) =>
-      typeof o === 'string' && /line\(s\) only in/.test(o),
+    expected: (output) =>
+      typeof output === 'string' &&
+      /line\(s\) only in/.test(output),
   };
 
 case 'csv-sql':
   return {
     input: makeCSV(n, 3),
-    expected: (o) =>
-      typeof o === 'string' &&
-      (o.match(/INSERT INTO/g) || []).length === n,
+    expected: (output) =>
+      typeof output === 'string' &&
+      (output.match(/INSERT INTO/g) || []).length === n,
   };
 
 case 'json-sql':
   return {
     input: makeJSON(n),
-    expected: (o) =>
-      typeof o === 'string' &&
-      (o.match(/INSERT INTO/g) || []).length === n,
+    expected: (output) =>
+      typeof output === 'string' &&
+      (output.match(/INSERT INTO/g) || []).length === n,
   };
 
 case 'csv-view':
   return {
     input: makeCSV(n),
-    expected: (o) => o.includes(`${n} rows`),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.includes(`${n} rows`),
   };
 
 case 'csv-json':
   return {
     input: makeCSV(n),
-    expected: (o) => JSON.parse(o).length === n,
+    expected: (output) => JSON.parse(output).length === n,
   };
 
 case 'clean-duplicates':
   return {
     input: makeCSV(n, 3, { duplicateEvery: 10 }),
-    expected: (o) =>
-      o.includes(`${Math.floor((n - 1) / 10)} duplicate row(s) found`) ||
-      (n < 11 && o.includes('No duplicate')),
+    expected: (output) =>
+      output.includes(
+        `${Math.floor((n - 1) / 10)} duplicate row(s) found`
+      ) ||
+      (n < 11 && output.includes('No duplicate')),
   };
 
 case 'sheet-tools':
   return {
     input: makeCSV(n),
-    expected: (o) => o.includes(`Trimmed ${n} rows`),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.includes(`Trimmed ${n} rows`),
   };
 
 case 'chart-csv': {
@@ -146,51 +203,57 @@ case 'chart-csv': {
       { length: count },
       (_, i) => `r${i},${i}`
     ).join('\n')}`,
-    expected: (o) => o.includes('average:'),
+    expected: (output) =>
+      typeof output === 'string' && output.includes('average:'),
   };
 }
 
 case 'table-diff':
   return {
     input: makeTableDiff(n),
-    expected: (o) =>
-      o.includes('Only in A') && o.includes('Only in B'),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.includes('Only in A') &&
+      output.includes('Only in B'),
   };
 
 case 'json-format':
-  return {
-    input: makeJSON(n),
-    expected: (o) => JSON.parse(o).length === n,
-  };
-
 case 'json-minify':
   return {
     input: makeJSON(n),
-    expected: (o) => JSON.parse(o).length === n,
+    expected: (output) => JSON.parse(output).length === n,
   };
 
 case 'json-diff':
   return {
     input: makeJSONDiff(Math.min(n, 1000)),
-    expected: (o) => o.includes('- ') && o.includes('+ '),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.includes('- ') &&
+      output.includes('+ '),
   };
 
 case 'regex':
   return {
     input: makeRegexInput(n),
-    expected: (o) => o.startsWith(`${n} match(es)`),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.startsWith(`${n} match(es)`),
   };
 
 case 'data-clean':
   return {
     input: makeText(n),
-    expected: (o) => o.split('\n').length === n,
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.split('\n').length === n,
   };
 
 case 'timestamp':
   return {
     input: '1767225600',
-    expected: (o) => o.includes('ISO (UTC):'),
+    expected: (output) =>
+      typeof output === 'string' && output.includes('ISO (UTC):'),
   };
 
 case 'create-table':
@@ -199,13 +262,16 @@ case 'create-table':
       { length: Math.min(n, 100) },
       (_, i) => `field_${i} VARCHAR(20)`
     ).join('\n')}`,
-    expected: (o) => o.includes('CREATE TABLE'),
+    expected: (output) =>
+      typeof output === 'string' &&
+      output.includes('CREATE TABLE'),
   };
 
 case 'sql-format':
   return {
     input: makeSQL(Math.min(n, 200)).split('\n-- QUERY B --\n')[0],
-    expected: (o) => typeof o === 'string' && o.length > 0,
+    expected: (output) =>
+      typeof output === 'string' && output.length > 0,
   };
 
 case 'sql-minify':
@@ -218,38 +284,42 @@ case 'sql-dialect':
       dialect: 'postgresql',
       letter: 'upper',
     },
-    expected: (o) => typeof o === 'string' && o.length > 0,
+    expected: (output) =>
+      typeof output === 'string' && output.length > 0,
   };
 
 default:
   return {
     input: sample,
-    expected: (o) => typeof o === 'string' && o.length > 0,
+    expected: (output) =>
+      typeof output === 'string' && output.length > 0,
   };
 
 }
 }
 
-function execute(tool, cfg) {
-if (cfg.join) {
+function execute(tool, config) {
+if (config.join) {
 return joinTables(
-cfg.left,
-cfg.right,
+config.left,
+config.right,
 'c1',
 'c1',
 'INNER'
 );
 }
 
-return runTool(tool.key, cfg.input, cfg.options);
+return runTool(tool.key, config.input, config.options);
 }
 
-function getInputBytes(cfg) {
-if (cfg.input !== undefined) return bytes(cfg.input);
+function getInputBytes(config) {
+if (config.input !== undefined) {
+return bytes(config.input);
+}
 
 return bytes({
-left: cfg.left,
-right: cfg.right,
+left: config.left,
+right: config.right,
 });
 }
 
@@ -257,18 +327,63 @@ function yieldToBrowser() {
 return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-$('run').addEventListener('click', async () => {
-const maxRows = Number($('rows').value);
+function setStatus(message) {
+const element = $('status');
 
-$('run').disabled = true;
-$('download').disabled = true;
-$('output').textContent = 'Preparing benchmark…';
+if (element) {
+element.textContent = message;
+}
+}
+
+function setOutput(message) {
+const element = $('output');
+
+if (element) {
+element.textContent = message;
+}
+}
+
+function setRunEnabled(enabled) {
+const button = $('run');
+
+if (button) {
+button.disabled = !enabled;
+}
+}
+
+function setDownloadEnabled(enabled) {
+const button = $('download');
+
+if (button) {
+button.disabled = !enabled;
+}
+}
+
+async function runBenchmark() {
+if ($('run')?.disabled) {
+return;
+}
+
+const maxRows = Number($('rows')?.value);
+
+if (!Number.isFinite(maxRows) || maxRows < 1) {
+setStatus('Please select a valid benchmark size.');
+return;
+}
+
+setRunEnabled(false);
+setDownloadEnabled(false);
+setOutput('Preparing benchmark…');
+setStatus('Running bounded browser tests…');
 
 const results = [];
+const memoryReadings = [];
 const startedAll = performance.now();
 const initialMemory = readMemory();
 
-$('status').textContent = 'Running bounded browser tests…';
+if (initialMemory) {
+memoryReadings.push(initialMemory);
+}
 
 try {
 for (const tool of registry) {
@@ -278,60 +393,89 @@ const sizes = [
 'sql-dialect',
 ].includes(tool.id)
 ? [1]
-: [Math.min(100, maxRows), maxRows].filter(
+: [
+Math.min(100, maxRows),
+maxRows,
+].filter(
 (value, index, all) => all.indexOf(value) === index
 );
 
   for (const size of sizes) {
-    let cfg;
+    let config = null;
+    let value;
     let inputBytes = null;
     let outputBytes = null;
     let correctness = false;
     let error = null;
     let status = 'ok';
-    let value;
-    let elapsedMs = 0;
+    let elapsedMs = null;
     let memoryBefore = null;
     let memoryAfter = null;
 
     try {
-      // Build the generated input before measuring the tool.
-      // This prevents input-generation memory from being mistaken
-      // for the tool's execution cost.
-      cfg = build(tool, size);
-      inputBytes = getInputBytes(cfg);
+      // Generate test data outside the tool execution timing.
+      config = build(tool, size);
+      inputBytes = getInputBytes(config);
 
-      // Allow the browser to update the page between test cases.
+      // Let the browser update the page before this test.
       await yieldToBrowser();
 
       memoryBefore = readMemory();
+
+      if (memoryBefore) {
+        memoryReadings.push(memoryBefore);
+      }
+
       const started = performance.now();
 
-      value = execute(tool, cfg);
+      // This is synchronous for the existing tool runner.
+      // A same-thread timer cannot reliably observe peak heap usage here.
+      value = execute(tool, config);
 
       elapsedMs = performance.now() - started;
+
       memoryAfter = readMemory();
+
+      if (memoryAfter) {
+        memoryReadings.push(memoryAfter);
+      }
 
       outputBytes = bytes(value);
 
-      correctness = cfg.join
-        ? value.rows.length === cfg.expected &&
-          value.rows.every((row) => row.kind === 'matched')
-        : cfg.expected(value);
+      correctness = config.join
+        ? Boolean(
+            value &&
+            Array.isArray(value.rows) &&
+            value.rows.length === config.expected &&
+            value.rows.every((row) => row.kind === 'matched')
+          )
+        : Boolean(config.expected(value));
 
       if (!correctness) {
         status = 'incorrect';
         error = 'Tool-specific correctness check failed';
       }
-    } catch (e) {
+    } catch (caught) {
       status = 'error';
-      error = `${e?.name || 'Error'}: ${e?.message || e}`;
+      error = `${caught?.name || 'Error'}: ${
+        caught?.message || String(caught)
+      }`;
 
-      // Record timing and memory where possible even if execution fails.
-      memoryAfter = readMemory();
+      if (elapsedMs === null) {
+        elapsedMs = null;
+      }
+
+      // Record an after-snapshot if execution failed.
+      if (!memoryAfter) {
+        memoryAfter = readMemory();
+
+        if (memoryAfter) {
+          memoryReadings.push(memoryAfter);
+        }
+      }
     }
 
-    const memoryDelta = memoryDifference(
+    const memoryChange = memoryDifference(
       memoryBefore,
       memoryAfter
     );
@@ -341,51 +485,59 @@ const sizes = [
       tool: tool.title,
       requestedRows: size,
       inputBytes,
-      inputMB:
+      inputMiB:
         inputBytes === null ? null : round(inputBytes / MB),
       outputBytes,
-      outputMB:
+      outputMiB:
         outputBytes === null ? null : round(outputBytes / MB),
-      elapsedMs: round(elapsedMs),
+      elapsedMs: elapsedMs === null ? null : round(elapsedMs),
       memory: {
         available: Boolean(memoryBefore && memoryAfter),
         before: memoryBefore,
         after: memoryAfter,
-        change: memoryDelta,
-        measurement: 'JavaScript heap snapshot before and after execution; not peak memory.',
+        change: memoryChange,
+        measurement:
+          'JavaScript heap snapshots immediately before and after synchronous execution; not peak memory.',
       },
       correctness,
       status,
       error,
     });
 
-    $('status').textContent =
-      `Completed ${results.length} cases… current: ${tool.title}`;
+    setStatus(
+      `Completed ${results.length} cases… current: ${tool.title}`
+    );
 
-    // Do not retain generated input/output references deliberately.
-    cfg = null;
+    // Release our references between cases. This does not guarantee
+    // that the browser immediately performs garbage collection.
+    config = null;
     value = null;
 
     await yieldToBrowser();
   }
 }
 
-} catch (e) {
+} catch (caught) {
 results.push({
 toolId: null,
 tool: 'Benchmark runner',
 status: 'error',
-error: "${e?.name || 'Error'}: ${e?.message || e}",
+error: "${caught?.name || 'Error'}: ${ caught?.message || String(caught) }",
 });
 }
 
 const finalMemory = readMemory();
 
-const memoryAvailable = results.some(
-(result) => result.memory?.available
-);
+if (finalMemory) {
+memoryReadings.push(finalMemory);
+}
 
 const validResults = results.filter((result) => result.toolId);
+const memoryDiagnostics = getMemoryDiagnostics(memoryReadings);
+
+const memoryAvailable = validResults.some(
+(result) => result.memory?.available
+);
 
 lastReport = {
 generatedAt: new Date().toISOString(),
@@ -396,20 +548,24 @@ environment: {
   deviceMemoryGB: navigator.deviceMemory ?? null,
   hardwareConcurrency: navigator.hardwareConcurrency ?? null,
   memoryMeasurement: memoryAvailable
-    ? 'Some JavaScript heap measurements available'
-    : 'Browser does not expose a supported JavaScript heap metric',
+    ? 'JavaScript heap snapshots available; peak usage is not measured'
+    : 'Browser did not expose the required JavaScript heap metrics',
 },
 
 memoryGuide: {
   units: 'Bytes and MiB; 1 MiB = 1,048,576 bytes',
+  metric: 'performance.memory, when exposed by the browser',
   meaning:
-    'Memory change is the difference between reported heap usage immediately before and after a synchronous tool call.',
+    'Memory change is the difference between reported heap usage immediately before and after synchronous tool execution.',
+  diagnostics: memoryDiagnostics,
   limitations: [
-    'This is JavaScript heap memory, not total browser or device RAM.',
+    'JavaScript heap is not total browser memory or total device RAM.',
     'Before/after readings can miss temporary peak allocations.',
+    'Synchronous work blocks same-thread timers, so this benchmark does not sample peak memory during a tool call.',
     'Garbage collection can make memory change negative.',
-    'The measurement includes unrelated activity in the same JavaScript heap.',
-    'A missing measurement means the browser did not expose the metric.',
+    'The reported heap can include allocations unrelated to the current tool.',
+    'Identical readings do not prove that a tool used no additional memory.',
+    'Input and output byte sizes are not measurements of actual memory consumption.',
     'A successful run does not guarantee the same input will work on every device.',
   ],
 },
@@ -431,51 +587,71 @@ memory: {
   beforeBenchmark: initialMemory,
   afterBenchmark: finalMemory,
   note:
-    'Overall snapshots are useful context only; they are not total device RAM or the benchmark peak.',
+    'These are heap snapshots, not total device RAM or benchmark peak memory.',
 },
 
 totalElapsedMs: round(performance.now() - startedAll),
 
 summary: {
   cases: validResults.length,
-  ok: validResults.filter((r) => r.status === 'ok').length,
-  incorrect: validResults.filter((r) => r.status === 'incorrect').length,
-  errors: results.filter((r) => r.status === 'error').length,
+  ok: validResults.filter((result) => result.status === 'ok').length,
+  incorrect: validResults.filter(
+    (result) => result.status === 'incorrect'
+  ).length,
+  errors: results.filter((result) => result.status === 'error').length,
   memoryMeasured: validResults.filter(
-    (r) => r.memory?.available
+    (result) => result.memory?.available
   ).length,
   memoryUnavailable: validResults.filter(
-    (r) => !r.memory?.available
+    (result) => !result.memory?.available
   ).length,
+  identicalMemoryReadings: memoryDiagnostics.identicalUsedHeapReadings,
 },
 
 results,
 
 };
 
-$('output').textContent = JSON.stringify(lastReport, null, 2);
+setOutput(JSON.stringify(lastReport, null, 2));
 
-$('download').disabled = false;
-$('run').disabled = false;
+setDownloadEnabled(true);
+setRunEnabled(true);
 
-$('status').textContent =
+setStatus(
 "Finished: ${lastReport.summary.ok} passed, " +
 "${lastReport.summary.incorrect} incorrect, " +
 "${lastReport.summary.errors} errors. " +
-"${lastReport.summary.memoryMeasured} cases have memory readings. Download the report.";
+"${lastReport.summary.memoryMeasured} cases have memory readings." +
+(memoryDiagnostics.identicalUsedHeapReadings
+? ' Warning: all available heap readings were identical; treat memory deltas as uninformative.'
+: '') +
+' Download the report.'
+);
+}
+
+$('run')?.addEventListener('click', () => {
+runBenchmark().catch((caught) => {
+setRunEnabled(true);
+setDownloadEnabled(Boolean(lastReport));
+setStatus(
+"Benchmark failed: ${caught?.name || 'Error'}: ${ caught?.message || String(caught) }"
+);
+});
 });
 
-$('download').addEventListener('click', () => {
-if (!lastReport) return;
+$('download')?.addEventListener('click', () => {
+if (!lastReport) {
+return;
+}
 
-const url = URL.createObjectURL(
-new Blob(
+const blob = new Blob(
 [JSON.stringify(lastReport, null, 2)],
 { type: 'application/json' }
-)
 );
 
+const url = URL.createObjectURL(blob);
 const link = document.createElement('a');
+
 link.href = url;
 link.download = 'querycherry-browser-memory-report.json';
 link.click();
